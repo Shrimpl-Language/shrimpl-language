@@ -5,5 +5,7 @@
     # pkgs.cargo
     pkgs.rust-analyzer
     pkgs.pkg-config
+    pkgs.rustup
+    pkgs.bashInteractive
   ];
 }
