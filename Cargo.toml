@@ -3,6 +3,22 @@ name = "shrimpl"
 version = "0.5.0"
 edition = "2021"
 
+# Crate metadata for distribution
+description = "Shrimpl 0.5 – a beginner-friendly API / data / ML scripting language with a Rust runtime and LSP support."
+license = "MIT"
+repository = "https://github.com/adl5423/shrimpl-language"
+homepage = "https://github.com/adl5423/shrimpl-language"
+documentation = "https://github.com/adl5423/shrimpl-language#readme"
+readme = "README.md"
+
+keywords = ["language", "education", "api", "web", "lsp"]
+categories = [
+    "command-line-utilities",
+    "development-tools",
+    "development-tools::build-utils",
+    "web-programming::http-server",
+]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 actix-web = "4"
@@ -16,7 +32,8 @@ csv = "1"
 tokio = { version = "1", features = ["full"] }
 tower-lsp = "0.20"
 
-# if you already had tokio from actix, just ensure "full" feature is on
+# If actix-web pulls in tokio, we still explicitly enable "full"
+# here so the LSP runtime has everything it needs.
 
 [[bin]]
 name = "shrimpl"
