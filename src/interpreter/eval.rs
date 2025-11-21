@@ -49,9 +49,9 @@
 use crate::parser::ast::{BinOp, Expr, FunctionDef, Program};
 use std::collections::HashMap;
 
-use ureq;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::Cursor;
+use ureq;
 
 // Runtime values for expressions
 #[derive(Debug, Clone)]
@@ -149,23 +149,17 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
                 .classes
                 .get(class_name)
                 .ok_or_else(|| format!("Undefined class '{}'", class_name))?;
-            let method = class.methods.get(method_name).ok_or_else(|| {
-                format!(
-                    "Class '{}' has no method '{}'",
-                    class_name, method_name
-                )
-            })?;
+            let method = class
+                .methods
+                .get(method_name)
+                .ok_or_else(|| format!("Class '{}' has no method '{}'", class_name, method_name))?;
             let arg_vals = eval_args(args, program, env)?;
             eval_function(method, arg_vals, program, env)
         }
     }
 }
 
-fn eval_args(
-    args: &[Expr],
-    program: &Program,
-    env: &Env,
-) -> Result<Vec<ValueRuntime>, String> {
+fn eval_args(args: &[Expr], program: &Program, env: &Env) -> Result<Vec<ValueRuntime>, String> {
     let mut out = Vec::new();
     for a in args {
         out.push(eval_expr(a, program, env)?);
@@ -211,7 +205,9 @@ fn eval_builtin(
             if vals.len() != 1 {
                 return Err("len(x) expects exactly 1 argument".to_string());
             }
-            Ok(ValueRuntime::Number(vals[0].to_string().chars().count() as f64))
+            Ok(ValueRuntime::Number(
+                vals[0].to_string().chars().count() as f64
+            ))
         }
         "upper" => {
             if vals.len() != 1 {
@@ -313,16 +309,11 @@ fn eval_builtin(
                     let text = r.into_string().map_err(|e| {
                         format!("http_get_json({}): failed to read body: {}", url, e)
                     })?;
-                    let json_val: serde_json::Value =
-                        serde_json::from_str(&text).map_err(|e| {
-                            format!(
-                                "http_get_json({}): response was not valid JSON: {}",
-                                url, e
-                            )
-                        })?;
+                    let json_val: serde_json::Value = serde_json::from_str(&text).map_err(|e| {
+                        format!("http_get_json({}): response was not valid JSON: {}", url, e)
+                    })?;
                     Ok(ValueRuntime::Str(
-                        serde_json::to_string_pretty(&json_val)
-                            .unwrap_or_else(|_| text.clone()),
+                        serde_json::to_string_pretty(&json_val).unwrap_or_else(|_| text.clone()),
                     ))
                 }
                 Err(err) => Err(format!("http_get_json({}): {}", url, err)),
@@ -411,8 +402,8 @@ fn eval_builtin(
 
             let mut rows_json: Vec<Value> = Vec::new();
             for rec in rdr.records() {
-                let record = rec
-                    .map_err(|e| format!("df_from_csv({}): failed to read record: {}", url, e))?;
+                let record =
+                    rec.map_err(|e| format!("df_from_csv({}): failed to read record: {}", url, e))?;
                 let mut row_vals: Vec<Value> = Vec::new();
                 for field in record.iter() {
                     if let Ok(n) = field.parse::<f64>() {
@@ -446,8 +437,7 @@ fn eval_builtin(
                 "columns": df.columns,
                 "rows": df.rows,
             });
-            let txt =
-                serde_json::to_string_pretty(&table).unwrap_or_else(|_| df_txt);
+            let txt = serde_json::to_string_pretty(&table).unwrap_or_else(|_| df_txt);
             Ok(ValueRuntime::Str(txt))
         }
         "df_select" => {
@@ -498,8 +488,7 @@ fn eval_builtin(
                 "columns": col_names,
                 "rows": new_rows,
             });
-            let txt =
-                serde_json::to_string_pretty(&table).unwrap_or_else(|_| df_txt);
+            let txt = serde_json::to_string_pretty(&table).unwrap_or_else(|_| df_txt);
             Ok(ValueRuntime::Str(txt))
         }
 
@@ -586,9 +575,7 @@ fn eval_binary(
 ) -> Result<ValueRuntime, String> {
     match op {
         BinOp::Add => match (left, right) {
-            (ValueRuntime::Number(a), ValueRuntime::Number(b)) => {
-                Ok(ValueRuntime::Number(a + b))
-            }
+            (ValueRuntime::Number(a), ValueRuntime::Number(b)) => Ok(ValueRuntime::Number(a + b)),
             _ => Ok(ValueRuntime::Str(format!(
                 "{}{}",
                 left.to_string(),
@@ -616,8 +603,8 @@ fn eval_binary(
 
 // Helper: parse JSON array of numbers from a string
 fn parse_json_array_numbers(label: &str, text: &str) -> Result<Vec<f64>, String> {
-    let val: Value =
-        serde_json::from_str(text).map_err(|e| format!("{}: not valid JSON array: {}", label, e))?;
+    let val: Value = serde_json::from_str(text)
+        .map_err(|e| format!("{}: not valid JSON array: {}", label, e))?;
     let arr = val
         .as_array()
         .ok_or_else(|| format!("{}: JSON value is not an array", label))?;

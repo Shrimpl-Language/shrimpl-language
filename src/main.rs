@@ -3,10 +3,10 @@ use std::error::Error;
 use std::fs;
 use std::process::{Command, Stdio};
 
-mod parser;
 mod ast;
-mod interpreter;
 mod docs;
+mod interpreter;
+mod parser;
 
 use interpreter::http::run as run_server;
 use parser::parse_program;
@@ -92,11 +92,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 /// Read the Shrimpl source file and parse it into a Program.
 fn load_and_parse(path: &str) -> Result<(String, ast::Program), Box<dyn Error>> {
-    let source = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read {}: {}", path, e))?;
+    let source = fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
 
-    let program = parse_program(&source)
-        .map_err(|e| format!("Parse error in {}: {}", path, e))?;
+    let program = parse_program(&source).map_err(|e| format!("Parse error in {}: {}", path, e))?;
 
     Ok((source, program))
 }
@@ -112,11 +110,7 @@ fn start_lsp_subprocess(exe: &str) -> Result<(), Box<dyn Error>> {
 
     let status = child.wait()?;
     if !status.success() {
-        return Err(format!(
-            "LSP server '{}' exited with status {}",
-            exe, status
-        )
-        .into());
+        return Err(format!("LSP server '{}' exited with status {}", exe, status).into());
     }
 
     Ok(())

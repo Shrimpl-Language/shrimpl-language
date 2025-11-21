@@ -6,8 +6,8 @@
 // - Exposes /__shrimpl/diagnostics (static analysis).
 // - Exposes /__shrimpl/source (raw app.shr).
 
-use crate::parser::ast::{Body, EndpointDecl, Method, Program};
 use crate::docs;
+use crate::parser::ast::{Body, EndpointDecl, Method, Program};
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -102,8 +102,9 @@ pub async fn run(program: Program) -> std::io::Result<()> {
                         Ok(text) => HttpResponse::Ok()
                             .content_type("text/plain; charset=utf-8")
                             .body(text),
-                        Err(_) => HttpResponse::InternalServerError()
-                            .body("Could not read app.shr"),
+                        Err(_) => {
+                            HttpResponse::InternalServerError().body("Could not read app.shr")
+                        }
                     }
                 }),
             );

@@ -18,9 +18,7 @@
 pub mod ast;
 pub mod expr;
 
-use self::ast::{
-    Body, ClassDef, EndpointDecl, FunctionDef, Method, Program, ServerDecl,
-};
+use self::ast::{Body, ClassDef, EndpointDecl, FunctionDef, Method, Program, ServerDecl};
 use self::expr::parse_expr;
 
 use std::collections::HashMap;
@@ -173,11 +171,7 @@ fn parse_endpoint(lines: &[&str], start: usize) -> Result<(EndpointDecl, usize),
     // 5. The body may be on the same line after the colon...
     if !after_colon.is_empty() {
         let body = parse_body_spec(after_colon, line_no)?;
-        let ep = EndpointDecl {
-            method,
-            path,
-            body,
-        };
+        let ep = EndpointDecl { method, path, body };
         return Ok((ep, start + 1));
     }
 
@@ -193,11 +187,7 @@ fn parse_endpoint(lines: &[&str], start: usize) -> Result<(EndpointDecl, usize),
         }
 
         let body = parse_body_spec(body_trimmed, j + 1)?;
-        let ep = EndpointDecl {
-            method,
-            path,
-            body,
-        };
+        let ep = EndpointDecl { method, path, body };
         // We consumed line j as the body, so the next line to process is j + 1
         return Ok((ep, j + 1));
     }
@@ -329,13 +319,7 @@ fn parse_class(lines: &[&str], start: usize) -> Result<(ClassDef, usize), String
         i += 1;
     }
 
-    Ok((
-        ClassDef {
-            name,
-            methods,
-        },
-        i,
-    ))
+    Ok((ClassDef { name, methods }, i))
 }
 
 fn parse_method_line(line: &str, line_no: usize) -> Result<FunctionDef, String> {
@@ -374,11 +358,7 @@ fn parse_method_line(line: &str, line_no: usize) -> Result<FunctionDef, String> 
 
 /// Extract a double-quoted string from somewhere in `s`.
 /// Returns (content_without_quotes, rest_after_the_closing_quote).
-fn extract_quoted<'a>(
-    s: &'a str,
-    line_no: usize,
-    what: &str,
-) -> Result<(String, &'a str), String> {
+fn extract_quoted<'a>(s: &'a str, line_no: usize, what: &str) -> Result<(String, &'a str), String> {
     let start = s.find('"').ok_or_else(|| {
         format!(
             "Line {}: expected opening '\"' for {} string",

@@ -10,8 +10,8 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 // Use the library modules defined in src/lib.rs
 // We only need the parser's AST Program type, the top-level docs module,
 // and the parse_program entry point.
-use shrimpl::parser::ast::Program;
 use shrimpl::docs;
+use shrimpl::parser::ast::Program;
 use shrimpl::parser::parse_program;
 
 /// Backend state for the LSP server.
@@ -76,10 +76,7 @@ fn analyze_source(source: String) -> (Vec<Diagnostic>, Option<Program>) {
 
             let diagnostic = Diagnostic {
                 range: Range {
-                    start: Position {
-                        line,
-                        character: 0,
-                    },
+                    start: Position { line, character: 0 },
                     end: Position {
                         line,
                         character: 200,
@@ -500,9 +497,7 @@ fn keyword_completions() -> Vec<CompletionItem> {
 impl LanguageServer for Backend {
     async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
         let capabilities = ServerCapabilities {
-            text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                TextDocumentSyncKind::FULL,
-            )),
+            text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             completion_provider: Some(CompletionOptions {
                 resolve_provider: Some(false),
@@ -571,10 +566,7 @@ impl LanguageServer for Backend {
         }
 
         // Clear diagnostics for this file
-        let _ = self
-            .client
-            .publish_diagnostics(uri, Vec::new(), None)
-            .await;
+        let _ = self.client.publish_diagnostics(uri, Vec::new(), None).await;
     }
 
     // --- Hover: basic info for keywords and declarations ---
@@ -706,7 +698,12 @@ impl LanguageServer for Backend {
         } else if let Some(methods) = method_names.get(&word) {
             let mut entries = Vec::new();
             for m in methods {
-                entries.push(format!("`{}.{}` (line {})", m.class_name, m.name, m.line + 1));
+                entries.push(format!(
+                    "`{}.{}` (line {})",
+                    m.class_name,
+                    m.name,
+                    m.line + 1
+                ));
             }
             Some(format!(
                 "Method `{}`.\n\nDefined in:\n{}",
