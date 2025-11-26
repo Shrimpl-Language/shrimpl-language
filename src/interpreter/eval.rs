@@ -299,7 +299,7 @@ fn eval_builtin(
                 return Err("len(x) expects exactly 1 argument".to_string());
             }
             Ok(ValueRuntime::Number(
-                vals[0].to_string().chars().count() as f64,
+                vals[0].to_string().chars().count() as f64
             ))
         }
         "upper" => {
