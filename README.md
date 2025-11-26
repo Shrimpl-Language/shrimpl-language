@@ -2,6 +2,22 @@
 
 [![Shrimpl banner](assets/shrimpl_banner.png)](https://shrimpl.dev)
 
+<p align="center">
+  <a href="https://shrimpl.dev" target="_blank" style="padding-right: 12px;">
+    <img 
+      src="https://img.shields.io/badge/Visit%20Website-005BBB?style=for-the-badge&logo=google-chrome&logoColor=white" 
+      alt="Shrimpl Website"
+    />
+  </a>
+
+  <a href="https://discord.gg/svnFRwfz" target="_blank" style="padding-left: 12px;">
+    <img 
+      src="https://img.shields.io/badge/Join%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" 
+      alt="Discord"
+    />
+  </a>
+</p>
+
 ## Introduction
 
 Shrimpl is a small, beginner‑friendly programming language designed to bridge the gap between visual languages (like Scratch) and general‑purpose languages (like Python or JavaScript). It aims to be:
