@@ -299,7 +299,7 @@ fn eval_builtin(
                 return Err("len(x) expects exactly 1 argument".to_string());
             }
             Ok(ValueRuntime::Number(
-                vals[0].to_string().chars().count() as f64
+                vals[0].to_string().chars().count() as f64,
             ))
         }
         "upper" => {
@@ -707,7 +707,7 @@ fn eval_builtin(
             let text = json_resp
                 .get("choices")
                 .and_then(|c| c.as_array())
-                .and_then(|arr| arr.get(0))
+                .and_then(|arr| arr.first())
                 .and_then(|first| first.get("message"))
                 .and_then(|m| m.get("content"))
                 .and_then(|c| c.as_str())
