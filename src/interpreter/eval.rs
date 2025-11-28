@@ -277,7 +277,7 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
             eval_function(method, arg_vals, program, env)
         }
 
-        // NEW: first-class list literal => JSON array string
+        // first-class list literal => JSON array string
         Expr::List(items) => {
             let mut arr = Vec::new();
             for item in items {
@@ -289,7 +289,7 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
             Ok(ValueRuntime::Str(txt))
         }
 
-        // NEW: first-class map literal => JSON object string
+        // first-class map literal => JSON object string
         Expr::Map(pairs) => {
             let mut obj = serde_json::Map::new();
             for (k, vexpr) in pairs {
