@@ -143,14 +143,14 @@ fn collect_vars_expr(expr: &Expr, out: &mut HashSet<String>) {
         // Literals: they don't contain variable references
         Expr::Number(_) | Expr::Str(_) | Expr::Bool(_) => {}
 
-        // Lists: walk each element
+        // NEW: list literal – walk each element
         Expr::List(items) => {
             for e in items {
                 collect_vars_expr(e, out);
             }
         }
 
-        // Maps: walk each value expression
+        // NEW: map literal – walk each value expression (keys are plain strings)
         Expr::Map(entries) => {
             for (_k, v) in entries {
                 collect_vars_expr(v, out);
@@ -177,14 +177,24 @@ fn collect_vars_expr(expr: &Expr, out: &mut HashSet<String>) {
             }
         }
 
-        // Control-flow expressions. For now we keep these arms minimal to
-        // satisfy exhaustiveness; you can later expand them to walk their
-        // internal expressions once the fields are finalized.
-        Expr::If { .. } => {
-            // TODO: walk all branches and else body
+        // Control-flow expressions: walk all branches and the else body
+        Expr::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, body) in branches {
+                collect_vars_expr(cond, out);
+                collect_vars_expr(body, out);
+            }
+            if let Some(else_expr) = else_branch {
+                collect_vars_expr(else_expr, out);
+            }
         }
-        Expr::Repeat { .. } => {
-            // TODO: walk repeat count and body expression
+
+        // Repeat: walk repeat count and body expression
+        Expr::Repeat { count, body } => {
+            collect_vars_expr(count, out);
+            collect_vars_expr(body, out);
         }
     }
 }
@@ -770,7 +780,7 @@ const DOCS_HTML: &str = r#"<!DOCTYPE html>
     function escapeHtml(text) {
       return text
         .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;/g')
+        .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
     }
 

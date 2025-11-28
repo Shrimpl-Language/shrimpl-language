@@ -277,6 +277,30 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
             eval_function(method, arg_vals, program, env)
         }
 
+        // NEW: first-class list literal => JSON array string
+        Expr::List(items) => {
+            let mut arr = Vec::new();
+            for item in items {
+                let v = eval_expr(item, program, env)?;
+                arr.push(value_to_json(&v));
+            }
+            let txt =
+                serde_json::to_string(&Value::Array(arr)).unwrap_or_else(|_| "[]".to_string());
+            Ok(ValueRuntime::Str(txt))
+        }
+
+        // NEW: first-class map literal => JSON object string
+        Expr::Map(pairs) => {
+            let mut obj = serde_json::Map::new();
+            for (k, vexpr) in pairs {
+                let v = eval_expr(vexpr, program, env)?;
+                obj.insert(k.clone(), value_to_json(&v));
+            }
+            let txt =
+                serde_json::to_string(&Value::Object(obj)).unwrap_or_else(|_| "{}".to_string());
+            Ok(ValueRuntime::Str(txt))
+        }
+
         Expr::If {
             branches,
             else_branch,
@@ -917,6 +941,18 @@ fn eval_builtin(
 }
 
 // ---------- helpers ----------
+
+// Convert a runtime value into serde_json::Value, trying to preserve structure
+fn value_to_json(v: &ValueRuntime) -> Value {
+    match v {
+        ValueRuntime::Number(n) => json!(n),
+        ValueRuntime::Bool(b) => json!(*b),
+        ValueRuntime::Str(s) => {
+            // Try to parse as JSON; if that fails, store as plain string.
+            serde_json::from_str::<Value>(s).unwrap_or_else(|_| json!(s))
+        }
+    }
+}
 
 // Try to coerce a value to a number when needed
 fn as_number(v: &ValueRuntime) -> Result<f64, String> {
