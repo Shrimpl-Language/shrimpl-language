@@ -223,8 +223,7 @@ fn tokenize_expr(s: &str) -> Result<Vec<Token>, String> {
                 if c.is_ascii_alphabetic() || c == '_' {
                     let start = i;
                     i += 1;
-                    while i < chars.len()
-                        && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
+                    while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
                     {
                         i += 1;
                     }

@@ -1059,7 +1059,7 @@ fn eval_binary(
 
 // Helper: parse JSON array of numbers from a string
 fn parse_json_array_numbers(label: &str, text: &str) -> Result<Vec<f64>, String> {
-    let val: Value = Value::from_str(text).unwrap_or_else(|_| json!(text)); // fallback if not JSON
+    let val: Value = Value::fromStr(text).unwrap_or_else(|_| json!(text)); // fallback if not JSON
     let arr = if let Some(arr) = val.as_array() {
         arr
     } else {
