@@ -68,8 +68,12 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 use std::fmt;
 use std::io::Cursor;
-use std::{env, sync::{Mutex, OnceLock}};
+use std::{
+    env,
+    sync::{Mutex, OnceLock},
+};
 use ureq;
+
 
 // ---------- runtime values ----------
 
