@@ -68,10 +68,7 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 use std::fmt;
 use std::io::Cursor;
-use std::{
-    env,
-    sync::{Mutex, OnceLock},
-};
+use std::{env, sync::{Mutex, OnceLock}};
 use ureq;
 
 // ---------- runtime values ----------
@@ -985,9 +982,7 @@ fn eval_binary(
     match op {
         // arithmetic --------------------------------------------------------
         BinOp::Add => match (left, right) {
-            (ValueRuntime::Number(a), ValueRuntime::Number(b)) => {
-                Ok(ValueRuntime::Number(a + b))
-            }
+            (ValueRuntime::Number(a), ValueRuntime::Number(b)) => Ok(ValueRuntime::Number(a + b)),
             // String concatenation fallback: "foo" + x
             _ => Ok(ValueRuntime::Str(format!("{}{}", left, right))),
         },
