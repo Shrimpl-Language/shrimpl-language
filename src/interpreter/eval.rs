@@ -70,7 +70,6 @@ use std::fmt;
 use std::io::Cursor;
 use std::{
     env,
-    str::FromStr,
     sync::{Mutex, OnceLock},
 };
 use ureq;
@@ -328,7 +327,7 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
             }
 
             // Hard safety bound to avoid runaway loops in teaching contexts.
-            let mut steps = n.floor() as usize;
+            let steps = n.floor() as usize;
             if steps > 10_000 {
                 return Err("repeat N times: N is too large (max 10_000)".to_string());
             }
@@ -1059,7 +1058,8 @@ fn eval_binary(
 
 // Helper: parse JSON array of numbers from a string
 fn parse_json_array_numbers(label: &str, text: &str) -> Result<Vec<f64>, String> {
-    let val: Value = Value::fromStr(text).unwrap_or_else(|_| json!(text)); // fallback if not JSON
+    // Try to parse as a JSON array; if that fails, treat the entire text as a single non-array value.
+    let val: Value = serde_json::from_str(text).unwrap_or_else(|_| json!(text));
     let arr = if let Some(arr) = val.as_array() {
         arr
     } else {
