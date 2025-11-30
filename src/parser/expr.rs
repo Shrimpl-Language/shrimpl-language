@@ -298,16 +298,8 @@ impl ExprParser {
     fn parse_or(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_and()?;
 
-        loop {
-            let is_or = match self.peek() {
-                Some(TokKind::Ident(name)) if name == "or" => true,
-                _ => false,
-            };
-
-            if !is_or {
-                break;
-            }
-
+        // Clippy-friendly: use matches! instead of match->bool pattern
+        while matches!(self.peek(), Some(TokKind::Ident(name)) if name == "or") {
             // consume 'or'
             self.bump();
             let right = self.parse_and()?;
@@ -325,16 +317,8 @@ impl ExprParser {
     fn parse_and(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_comparison()?;
 
-        loop {
-            let is_and = match self.peek() {
-                Some(TokKind::Ident(name)) if name == "and" => true,
-                _ => false,
-            };
-
-            if !is_and {
-                break;
-            }
-
+        // Clippy-friendly: use matches! instead of match->bool pattern
+        while matches!(self.peek(), Some(TokKind::Ident(name)) if name == "and") {
             // consume 'and'
             self.bump();
             let right = self.parse_comparison()?;
