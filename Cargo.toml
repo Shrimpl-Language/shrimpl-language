@@ -1,6 +1,6 @@
 [package]
 name = "shrimpl"
-version = "0.5.3.1"
+version = "0.5.31"
 edition = "2021"
 license = "MIT"
 description = "Shrimpl programming language and LSP"
