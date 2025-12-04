@@ -58,8 +58,16 @@ fn load_recursive(path: &Path, visited: &mut HashSet<PathBuf>, out: &mut String)
 
 /// Extract the string between double quotes in something like `"file.shr"`
 /// or `"file.shr" # comment`.
-fn extract_import_path(rest: &str) -> Option<(String, &str)> {
+///
+/// Returns:
+///   - `Some((path, trailing_text))` where:
+///       * `path` is the content between quotes (e.g., `file.shr`)
+///       * `trailing_text` is everything after the closing quote on that line
+///   - `None` if no well-formed quoted path is found.
+fn extract_import_path(rest: &str) -> Option<(String, String)> {
     let mut chars = rest.chars().peekable();
+
+    // Skip leading whitespace
     while let Some(c) = chars.peek() {
         if c.is_whitespace() {
             chars.next();
@@ -67,16 +75,23 @@ fn extract_import_path(rest: &str) -> Option<(String, &str)> {
             break;
         }
     }
+
+    // Next non-whitespace must be opening quote
     if chars.next()? != '"' {
         return None;
     }
+
+    // Collect characters until closing quote
     let mut s = String::new();
     while let Some(c) = chars.next() {
         if c == '"' {
+            // Everything after the closing quote is "remaining"
             let remaining: String = chars.collect();
-            return Some((s, remaining.as_str()));
+            return Some((s, remaining));
         }
         s.push(c);
     }
+
+    // No closing quote found
     None
 }
