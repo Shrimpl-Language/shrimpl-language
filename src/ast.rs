@@ -6,7 +6,10 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ServerDecl {
+    /// TCP port to listen on (e.g. 3000, 443).
     pub port: u16,
+    /// Whether HTTPS/TLS is enabled (server 443 tls).
+    pub tls: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +108,25 @@ pub enum Expr {
         count: Box<Expr>,
         body: Box<Expr>,
     },
+
+    /// try / catch / finally as an expression:
+    ///
+    ///   try:
+    ///       expr1
+    ///   catch err:
+    ///       expr2
+    ///   finally:
+    ///       expr3
+    ///
+    /// Any of `catch_var`, `catch_body`, or `finally_body` can be None.
+    /// Exceptions are runtime evaluation errors that would normally
+    /// bubble up as a failed endpoint.
+    Try {
+        try_body: Box<Expr>,
+        catch_var: Option<String>,
+        catch_body: Option<Box<Expr>>,
+        finally_body: Option<Box<Expr>>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -133,10 +155,22 @@ pub struct EndpointDecl {
     pub body: Body,
 }
 
+/// Secret declarations, mapping a logical name used in Shrimpl code to an
+/// underlying environment variable key (or other backend key).
+///
+/// Example Shrimpl:
+///   secret OPENAI = "SHRIMPL_OPENAI_API_KEY"
+#[derive(Debug, Clone)]
+pub struct SecretDecl {
+    pub name: String,
+    pub key: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Program {
     pub server: ServerDecl,
     pub endpoints: Vec<EndpointDecl>,
     pub functions: HashMap<String, FunctionDef>,
     pub classes: HashMap<String, ClassDef>,
+    pub secrets: Vec<SecretDecl>,
 }

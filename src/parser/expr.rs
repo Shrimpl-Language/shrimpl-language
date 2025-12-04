@@ -1,6 +1,6 @@
 // src/parser/expr.rs
 //
-// Expression tokenizer and parser for Shrimpl v0.2.
+// Expression tokenizer and parser for Shrimpl.
 // Supports:
 // - numbers: 1, 2.5
 // - strings: "hi"
@@ -13,6 +13,7 @@
 // - repeat N times: expr loop expressions
 // - list literals: [1, 2, "x"]
 // - map literals: { key: 1, "other": 2 }
+// - try / catch / finally expressions (single-line style)
 
 use super::ast::{BinOp, Expr};
 
@@ -41,7 +42,7 @@ enum TokKind {
     Gt,
     Ge,
 
-    // New: brackets/braces for list/map literals
+    // list/map literals
     LBracket,
     RBracket,
     LBrace,
@@ -84,7 +85,6 @@ fn tokenize_expr(s: &str) -> Result<Vec<Token>, String> {
 
         match c {
             '"' => {
-                // string literal
                 i += 1;
                 let start = i;
                 while i < chars.len() && chars[i] != '"' {
@@ -94,7 +94,7 @@ fn tokenize_expr(s: &str) -> Result<Vec<Token>, String> {
                     return Err("Unterminated string literal".to_string());
                 }
                 let text: String = chars[start..i].iter().collect();
-                i += 1; // consume closing quote
+                i += 1;
                 tokens.push(Token {
                     kind: TokKind::Str(text),
                 });
@@ -223,7 +223,8 @@ fn tokenize_expr(s: &str) -> Result<Vec<Token>, String> {
                 if c.is_ascii_alphabetic() || c == '_' {
                     let start = i;
                     i += 1;
-                    while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                    while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
+                    {
                         i += 1;
                     }
                     let ident: String = chars[start..i].iter().collect();
@@ -282,12 +283,14 @@ impl ExprParser {
     }
 
     pub fn parse_expr(&mut self) -> Result<Expr, String> {
-        // Top-level entry: special-case if/repeat when they lead the expression
+        // Top-level entry: special-case if / repeat / try when they lead the expression.
         if let Some(name) = self.peek_ident() {
             if name == "if" {
                 return self.parse_if_expr();
             } else if name == "repeat" {
                 return self.parse_repeat_expr();
+            } else if name == "try" {
+                return self.parse_try_expr();
             }
         }
 
@@ -298,10 +301,14 @@ impl ExprParser {
     fn parse_or(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_and()?;
 
-        // Clippy-friendly: use matches! instead of match->bool pattern
-        while matches!(self.peek(), Some(TokKind::Ident(name)) if name == "or") {
-            // consume 'or'
-            self.bump();
+        loop {
+            let is_or = matches!(self.peek(), Some(TokKind::Ident(name)) if name == "or");
+
+            if !is_or {
+                break;
+            }
+
+            self.bump(); // 'or'
             let right = self.parse_and()?;
             expr = Expr::Binary {
                 left: Box::new(expr),
@@ -317,10 +324,14 @@ impl ExprParser {
     fn parse_and(&mut self) -> Result<Expr, String> {
         let mut expr = self.parse_comparison()?;
 
-        // Clippy-friendly: use matches! instead of match->bool pattern
-        while matches!(self.peek(), Some(TokKind::Ident(name)) if name == "and") {
-            // consume 'and'
-            self.bump();
+        loop {
+            let is_and = matches!(self.peek(), Some(TokKind::Ident(name)) if name == "and");
+
+            if !is_and {
+                break;
+            }
+
+            self.bump(); // 'and'
             let right = self.parse_comparison()?;
             expr = Expr::Binary {
                 left: Box::new(expr),
@@ -347,7 +358,6 @@ impl ExprParser {
                 _ => break,
             };
 
-            // consume operator
             self.bump();
 
             let right = self.parse_add_sub()?;
@@ -426,18 +436,16 @@ impl ExprParser {
             Some(TokKind::Number(n)) => Ok(Expr::Number(n)),
             Some(TokKind::Str(s)) => Ok(Expr::Str(s)),
             Some(TokKind::Ident(name)) => {
-                // booleans
                 if name == "true" {
                     return Ok(Expr::Bool(true));
                 } else if name == "false" {
                     return Ok(Expr::Bool(false));
                 }
 
-                // Could be var, func call, or class.method call
                 match self.peek() {
                     Some(TokKind::Dot) => {
-                        // class method call: ClassName.method(args)
-                        self.bump(); // consume '.'
+                        // ClassName.method(args)
+                        self.bump(); // '.'
                         let method_name = match self.bump() {
                             Some(TokKind::Ident(m)) => m,
                             other => {
@@ -447,10 +455,9 @@ impl ExprParser {
                                 ))
                             }
                         };
-                        // optional arg list
                         match self.peek() {
                             Some(TokKind::LParen) => {
-                                self.bump(); // '('
+                                self.bump();
                                 let args = self.parse_arg_list()?;
                                 Ok(Expr::MethodCall {
                                     class_name: name,
@@ -462,8 +469,7 @@ impl ExprParser {
                         }
                     }
                     Some(TokKind::LParen) => {
-                        // function call: name(args)
-                        self.bump(); // '('
+                        self.bump();
                         let args = self.parse_arg_list()?;
                         Ok(Expr::Call { name, args })
                     }
@@ -486,9 +492,8 @@ impl ExprParser {
     fn parse_arg_list(&mut self) -> Result<Vec<Expr>, String> {
         let mut args = Vec::new();
 
-        // empty arg list
         if matches!(self.peek(), Some(TokKind::RParen)) {
-            self.bump(); // consume ')'
+            self.bump();
             return Ok(args);
         }
 
@@ -498,10 +503,10 @@ impl ExprParser {
 
             match self.peek() {
                 Some(TokKind::Comma) => {
-                    self.bump(); // ','
+                    self.bump();
                 }
                 Some(TokKind::RParen) => {
-                    self.bump(); // ')'
+                    self.bump();
                     break;
                 }
                 other => {
@@ -516,17 +521,12 @@ impl ExprParser {
         Ok(args)
     }
 
-    /// Parse list literal:
-    ///
-    ///   [expr1, expr2, ...]
-    ///
-    /// Supports empty list: [].
+    /// Parse list literal: [expr1, expr2, ...]
     fn parse_list_literal(&mut self) -> Result<Expr, String> {
         let mut items = Vec::new();
 
-        // empty list
         if matches!(self.peek(), Some(TokKind::RBracket)) {
-            self.bump(); // ]
+            self.bump();
             return Ok(Expr::List(items));
         }
 
@@ -536,10 +536,10 @@ impl ExprParser {
 
             match self.peek() {
                 Some(TokKind::Comma) => {
-                    self.bump(); // ','
+                    self.bump();
                 }
                 Some(TokKind::RBracket) => {
-                    self.bump(); // ']'
+                    self.bump();
                     break;
                 }
                 other => {
@@ -554,22 +554,16 @@ impl ExprParser {
         Ok(Expr::List(items))
     }
 
-    /// Parse map literal:
-    ///
-    ///   { key: expr, "other": expr2, ... }
-    ///
-    /// Keys can be identifiers or string literals. Empty map `{}` is allowed.
+    /// Parse map literal: { key: expr, "other": expr2, ... }
     fn parse_map_literal(&mut self) -> Result<Expr, String> {
         let mut entries: Vec<(String, Expr)> = Vec::new();
 
-        // empty map
         if matches!(self.peek(), Some(TokKind::RBrace)) {
-            self.bump(); // }
+            self.bump();
             return Ok(Expr::Map(entries));
         }
 
         loop {
-            // key: identifier or string
             let key = match self.bump() {
                 Some(TokKind::Ident(name)) => name,
                 Some(TokKind::Str(s)) => s,
@@ -583,7 +577,12 @@ impl ExprParser {
 
             match self.bump() {
                 Some(TokKind::Colon) => {}
-                other => return Err(format!("Expected ':' after map key, found {:?}", other)),
+                other => {
+                    return Err(format!(
+                        "Expected ':' after map key '{}', found {:?}",
+                        key, other
+                    ))
+                }
             }
 
             let value_expr = self.parse_expr()?;
@@ -591,10 +590,10 @@ impl ExprParser {
 
             match self.peek() {
                 Some(TokKind::Comma) => {
-                    self.bump(); // ','
+                    self.bump();
                 }
                 Some(TokKind::RBrace) => {
-                    self.bump(); // '}'
+                    self.bump();
                     break;
                 }
                 other => {
@@ -609,26 +608,18 @@ impl ExprParser {
         Ok(Expr::Map(entries))
     }
 
-    /// Parse `if` / `elif` / `else` expression:
-    ///
-    ///   if cond1: expr1
-    ///   elif cond2: expr2
-    ///   else: expr3
-    ///
-    /// This must be the leading construct of the expression.
+    /// Parse `if` / `elif` / `else` expression.
     fn parse_if_expr(&mut self) -> Result<Expr, String> {
-        // consume 'if'
         match self.bump() {
             Some(TokKind::Ident(name)) if name == "if" => {}
             other => {
                 return Err(format!(
-                    "Internal parser error: expected 'if' at start of if-expression, found {:?}",
+                    "Internal parser error: expected 'if', found {:?}",
                     other
                 ))
             }
         }
 
-        // condition
         let first_cond = self.parse_or()?;
         self.expect_colon("if")?;
         let first_expr = self.parse_expr()?;
@@ -641,7 +632,6 @@ impl ExprParser {
         loop {
             match self.peek_ident() {
                 Some("elif") => {
-                    // consume 'elif'
                     self.bump();
                     let cond = self.parse_or()?;
                     self.expect_colon("elif")?;
@@ -649,7 +639,6 @@ impl ExprParser {
                     branches.push((cond, body));
                 }
                 Some("else") => {
-                    // consume 'else'
                     self.bump();
                     self.expect_colon("else")?;
                     let body = self.parse_expr()?;
@@ -666,26 +655,20 @@ impl ExprParser {
         })
     }
 
-    /// Parse `repeat <count_expr> times: <body_expr>`
-    ///
-    /// Example:
-    ///   repeat 3 times: "hello"
+    /// Parse `repeat N times: expr`.
     fn parse_repeat_expr(&mut self) -> Result<Expr, String> {
-        // consume 'repeat'
         match self.bump() {
             Some(TokKind::Ident(name)) if name == "repeat" => {}
             other => {
                 return Err(format!(
-                    "Internal parser error: expected 'repeat' at start of repeat-expression, found {:?}",
+                    "Internal parser error: expected 'repeat', found {:?}",
                     other
                 ))
             }
         }
 
-        // count expression (can be any expression; coerced to number at runtime)
         let count_expr = self.parse_or()?;
 
-        // expect keyword 'times'
         match self.peek() {
             Some(TokKind::Ident(name)) if name == "times" => {
                 self.bump();
@@ -704,6 +687,72 @@ impl ExprParser {
         Ok(Expr::Repeat {
             count: Box::new(count_expr),
             body: Box::new(body_expr),
+        })
+    }
+
+    /// Parse `try`/`catch`/`finally` expression (single-line Shrimpl style):
+    ///
+    ///   try:
+    ///     expr1
+    ///   catch err:
+    ///     expr2
+    ///   finally:
+    ///     expr3
+    fn parse_try_expr(&mut self) -> Result<Expr, String> {
+        match self.bump() {
+            Some(TokKind::Ident(name)) if name == "try" => {}
+            other => {
+                return Err(format!(
+                    "Internal parser error: expected 'try', found {:?}",
+                    other
+                ))
+            }
+        }
+
+        self.expect_colon("try")?;
+        let try_body = self.parse_expr()?;
+
+        let mut catch_var: Option<String> = None;
+        let mut catch_body: Option<Box<Expr>> = None;
+        let mut finally_body: Option<Box<Expr>> = None;
+
+        loop {
+            match self.peek_ident() {
+                Some("catch") => {
+                    self.bump();
+
+                    let var_name = match self.peek() {
+                        Some(TokKind::Ident(_)) => {
+                            if let Some(TokKind::Ident(n)) = self.bump() {
+                                Some(n)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    self.expect_colon("catch")?;
+                    let body = self.parse_expr()?;
+                    catch_var = var_name;
+                    catch_body = Some(Box::new(body));
+                }
+                Some("finally") => {
+                    self.bump();
+                    self.expect_colon("finally")?;
+                    let body = self.parse_expr()?;
+                    finally_body = Some(Box::new(body));
+                    break;
+                }
+                _ => break,
+            }
+        }
+
+        Ok(Expr::Try {
+            try_body: Box::new(try_body),
+            catch_var,
+            catch_body,
+            finally_body,
         })
     }
 }

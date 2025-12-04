@@ -1,15 +1,17 @@
-// src/main.rs
-
 use clap::{Parser, Subcommand};
 use std::process::{Command, Stdio};
 use std::{env, error::Error, fs};
 
 mod ast;
+mod config;
 mod docs;
 mod interpreter;
+mod lockfile;
 mod parser;
 
+use config as shrimpl_config;
 use interpreter::http::run as run_server;
+use lockfile::write_lockfile;
 use parser::parse_program;
 
 /// Shrimpl version (from Cargo.toml)
@@ -58,6 +60,7 @@ fn print_welcome_screen() {
     println!("        http://localhost:3000/__shrimpl/ui");
     println!("    to use the Shrimpl API Studio visual UI.");
     println!("  • Set SHRIMPL_OPENAI_API_KEY before running if you use OpenAI helpers.");
+    println!("  • Set SHRIMPL_ENV (dev, prod, etc.) to pick config/config.<env>.json.");
     println!();
 }
 
@@ -104,60 +107,55 @@ enum Commands {
 fn main() -> Result<(), Box<dyn Error>> {
     let arg_count = env::args().count();
 
-    // If the user just types `shrimpl` with no additional arguments,
-    // show the ASCII banner + friendly help instead of immediately
-    // starting the server.
     if arg_count == 1 {
         print_welcome_screen();
         return Ok(());
     }
 
-    // Otherwise, run the normal CLI behavior.
     run_cli()
 }
 
-/// Actual CLI implementation (what used to be `main`).
+/// Actual CLI implementation.
 fn run_cli() -> Result<(), Box<dyn Error>> {
-    let cli = Cli::parse();
+    // Initialize environment-specific configuration (config/config.<env>.json).
+    shrimpl_config::init();
 
-    // Default behavior with no subcommand is the same as `run`.
+    let cli = Cli::parse();
     let command = cli.command.unwrap_or(Commands::Run);
 
     match command {
         Commands::Lsp { exe } => {
-            // LSP mode: spawn the shrimpl-lsp binary and wire stdin/stdout/stderr through.
             start_lsp_subprocess(&exe)?;
         }
 
         Commands::Run => {
-            let (source, program) = load_and_parse(&cli.file)?;
-            // Avoid unused variable warning (source is also used by docs UI endpoint).
+            let (source, mut program) = load_and_parse(&cli.file)?;
             let _ = source;
 
-            // Read the configured port from the Shrimpl program so we can tell
-            // the user exactly where the server will be listening.
-            let port = program.server.port;
+            // Apply server overrides from config file (port / tls).
+            shrimpl_config::apply_server_to_program(&mut program);
 
-            // Friendly startup banner for `shrimpl --file app.shr run`.
+            let port = program.server.port;
+            let scheme = if program.server.tls { "https" } else { "http" };
+
             println!();
             println!("shrimpl run");
             println!("----------------------------------------");
-            println!("Shrimpl server is starting on http://localhost:{port}");
+            println!("Shrimpl server is starting on {scheme}://localhost:{port}");
             println!("Open one of these in your browser:");
-            println!("  • http://localhost:{port}/           (root endpoint)");
-            println!("  • http://localhost:{port}/__shrimpl/ui  (API Studio UI)");
+            println!("  • {scheme}://localhost:{port}/");
+            println!("  • {scheme}://localhost:{port}/__shrimpl/ui");
+            println!("  • {scheme}://localhost:{port}/health");
             println!();
             println!("Press Ctrl+C to shut down the server.");
             println!("----------------------------------------");
             println!();
 
-            // Run the HTTP server using actix.
             actix_web::rt::System::new().block_on(run_server(program))?;
         }
 
         Commands::Check => {
             let (_source, _program) = load_and_parse(&cli.file)?;
-            // If parse succeeded, we are OK.
             println!("OK: {}", &cli.file);
         }
 
@@ -178,10 +176,14 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
 }
 
 /// Read the Shrimpl source file and parse it into a Program.
+/// Also writes shrimpl.lock using the current Shrimpl version and environment.
 fn load_and_parse(path: &str) -> Result<(String, ast::Program), Box<dyn Error>> {
     let source = fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
 
     let program = parse_program(&source).map_err(|e| format!("Parse error in {}: {}", path, e))?;
+
+    let env_name = shrimpl_config::env_name();
+    write_lockfile(SHRIMPL_VERSION, &env_name, path, &source);
 
     Ok((source, program))
 }

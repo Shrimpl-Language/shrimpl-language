@@ -1,0 +1,44 @@
+{
+  "server": {
+    "port": 3000,
+    "tls": false
+  },
+  "auth": {
+    "jwt_secret_env": "SHRIMPL_JWT_SECRET",
+    "protected_paths": ["/secure", "/orders"],
+    "allow_missing_on": ["/", "/info", "/health", "/public"]
+  },
+  "validation": {
+    "schemas": {
+      "/orders/create": {
+        "type": "object",
+        "required": ["customer_id", "total", "items"],
+        "properties": {
+          "customer_id": { "type": "string" },
+          "total":       { "type": "number" },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["sku", "qty"],
+              "properties": {
+                "sku": { "type": "string" },
+                "qty": { "type": "integer", "minimum": 1 }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "secrets": {
+    "env": {
+      "OPENAI": "SHRIMPL_OPENAI_API_KEY"
+    }
+  },
+  "values": {
+    "example_mode": "dev"
+  }
+}

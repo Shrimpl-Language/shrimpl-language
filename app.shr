@@ -1,4 +1,12 @@
-# Shrimpl demo with data, ML, and OpenAI helpers
+# app.shr
+#
+# Shrimpl 0.5.4 demo:
+# - Data, ML, config, HTTP, and OpenAI helpers
+# - Config-driven server (port/tls) via config/config.<env>.json
+# - Built-in JWT auth (via config.auth.*)
+# - Input validation + sanitization (via config.validation.schemas)
+# - Structured JSON logging for each HTTP request
+#
 # Open /__shrimpl/ui for the visual API UI.
 #
 # NOTE:
@@ -16,12 +24,52 @@ func greet(name): "Hello " + name
 # Numeric summary from three values (must be single-line expression)
 func stats_summary(a, b, c): "sum=" + sum(number(a), number(b), number(c)) + ", avg=" + avg(number(a), number(b), number(c)) + ", min=" + min(number(a), number(b), number(c)) + ", max=" + max(number(a), number(b), number(c))
 
-# OpenAI wrapper helpers
+# --- OpenAI wrapper helpers ---
+
 func set_openai_api_key(key): openai_set_api_key(key)
 func set_openai_system(prompt): openai_set_system_prompt(prompt)
 func chat_with_openai(prompt): openai_chat(prompt)
 func chat_with_openai_json(prompt): openai_chat_json(prompt)
 func call_openai_mcp(server_id, tool_name, args_json): openai_mcp_call(server_id, tool_name, args_json)
+
+# --- New generic config + env helpers ---
+
+# Store a config key/value in the in-memory app config.
+# Example:
+#   /config/set?key=mode&value=demo
+func config_set_value(key, value): config_set(key, value)
+
+# Get a config value, or empty string if missing.
+# Example:
+#   /config/get?key=mode
+func config_get_value(key): config_get(key)
+
+# Get a config value with default.
+# Example:
+#   /config/get-or?key=mode&default=prod
+func config_get_or_default(key, default): config_get(key, default)
+
+# Check if a config key exists.
+# Example:
+#   /config/has?key=mode
+func config_has_key(key): config_has(key)
+
+# Read a single environment variable.
+# Example:
+#   /env?name=PATH
+func read_env(name): env(name)
+
+# --- HTTP client helpers ---
+
+# Simple pass-through demo that fetches raw text from a URL.
+# Example:
+#   /http/get?url=https://example.com
+func http_proxy_get(url): http_get(url)
+
+# Fetch JSON from a URL and pretty-print it.
+# Example:
+#   /http/get-json?url=https://api.github.com
+func http_proxy_get_json(url): http_get_json(url)
 
 # --- New control-flow / boolean / repeat helpers ---
 
@@ -79,7 +127,8 @@ endpoint GET "/double/:n": Math.double(n)
 #   /welcome             -> "Hi there! No name provided."
 endpoint GET "/welcome": if name == "": "Hi there! No name provided." else: "Hi " + upper(name) + "! Name length: " + len(name)
 
-endpoint GET "/info": json { "lang": "Shrimpl", "version": 0.5, "ui": "/__shrimpl/ui" }
+# Updated to reflect Shrimpl 0.5.4
+endpoint GET "/info": json { "lang": "Shrimpl", "version": "0.5.4", "ui": "/__shrimpl/ui" }
 
 # Numeric analysis from query (?a=10&b=5&c=15)
 endpoint GET "/stats": stats_summary(a, b, c)
@@ -91,6 +140,10 @@ endpoint GET "/vec": vec(1, 2, 3, 4, 5)
 
 # Dot product example: /dot?ax=1&ay=2&bx=3&by=4
 endpoint GET "/dot": tensor_dot(vec(number(ax), number(ay)), vec(number(bx), number(by)))
+
+# Elementwise addition example:
+#   /tensor-add?ax=1&ay=2&bx=3&by=4  -> "[4,6]"
+endpoint GET "/tensor-add": tensor_add(vec(number(ax), number(ay)), vec(number(bx), number(by)))
 
 # --- DataFrame (pandas-ish) ---
 
@@ -158,3 +211,94 @@ endpoint GET "/flag": flag_to_bool(flag)
 
 # /repeat-greet?name=...&n=...
 endpoint GET "/repeat-greet": repeat_greet(name, n)
+
+# --- Config + env test endpoints ---
+
+# Store: /config/set?key=mode&value=demo
+endpoint GET "/config/set": config_set_value(key, value)
+
+# Get: /config/get?key=mode
+endpoint GET "/config/get": config_get_value(key)
+
+# Get with default: /config/get-or?key=mode&default=prod
+endpoint GET "/config/get-or": config_get_or_default(key, default)
+
+# Has: /config/has?key=mode
+endpoint GET "/config/has": config_has_key(key)
+
+# Env: /env?name=PATH
+endpoint GET "/env": read_env(name)
+
+# --- HTTP client test endpoints ---
+
+# Raw text fetch:
+#   /http/get?url=https://example.com
+endpoint GET "/http/get": http_proxy_get(url)
+
+# JSON pretty-print fetch:
+#   /http/get-json?url=https://api.github.com
+endpoint GET "/http/get-json": http_proxy_get_json(url)
+
+# --- Auth + JWT + validation demo endpoints ---
+#
+# These endpoints rely on:
+# - config.auth.* for which paths require JWT.
+# - config.validation.schemas.* for JSON Schema validation.
+# - http.rs middleware, which:
+#   - validates JWT and injects:
+#       jwt_sub, jwt_scope, jwt_role
+#   - validates + sanitizes JSON body into:
+#       body   (string with sanitized JSON)
+
+# Public, unprotected endpoint to verify that the server is up and
+# that logging is working without any JWT:
+#   GET /public/ping
+endpoint GET "/public/ping": "public-ok"
+
+# Protected profile endpoint:
+# - Mark /secure as protected in config.auth.protected_paths.
+# - When called with a valid Authorization: Bearer <token>,
+#   http.rs will:
+#     - verify JWT
+#     - inject jwt_sub / jwt_role / jwt_scope
+# - This endpoint just reflects those values.
+#
+# Example (with valid JWT):
+#   GET /secure/profile
+#   -> "profile for demo-user (role=admin, scope=api:read api:write)"
+endpoint GET "/secure/profile": if jwt_sub == "": "profile: anonymous (no jwt_sub claim)" else: "profile for " + jwt_sub + " (role=" + jwt_role + ", scope=" + jwt_scope + ")"
+
+# Simple role-based check on top of JWT:
+# - Same protection as above via config.
+# - Additionally, checks jwt_role == "admin".
+#
+# Example:
+#   GET /secure/admin  (with role=admin) -> "admin access granted"
+#   GET /secure/admin  (with role=user)  -> "admin access denied (role=user)"
+endpoint GET "/secure/admin": if jwt_role == "admin": "admin access granted" else: "admin access denied (role=" + jwt_role + ")"
+
+# Validated + sanitized JSON body demo:
+#
+# - Configure JSON Schema for path "/orders/create" in config.validation.schemas.
+# - http.rs will:
+#     - parse request body as JSON
+#     - validate against schema
+#     - sanitize (trim strings, recurse into arrays/objects)
+#     - serialize back and inject as `body` string
+# - This endpoint returns the sanitized JSON string directly.
+#
+# Example:
+#   POST /orders/create
+#   Content-Type: application/json
+#   Body:
+#     { "customer_id": " 123 ", "total": 10.5,
+#       "items": [{ "sku": " ABC ", "qty": 2 }] }
+#
+#   If valid by schema, you get back the same JSON but with strings trimmed.
+#   If invalid, http.rs returns 400 before this code runs.
+endpoint POST "/orders/create": body
+
+# Same as above, but unvalidated:
+# - No schema configured -> http.rs just passes the raw body.
+# - Useful to compare behavior with /orders/create.
+endpoint POST "/orders/raw": body
