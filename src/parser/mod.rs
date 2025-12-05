@@ -2,7 +2,7 @@
 //
 // Shrimpl v0.5 parser (line-based).
 // Features:
-// - server <port>
+// - server <port> [tls]
 // - endpoint METHOD "/path"[: <body>]
 //   Body can be on same line after colon or next non-empty line.
 //   Body is either:
@@ -13,6 +13,8 @@
 // - func name(a, b): expr
 // - class Name:
 //     method(a, b): expr
+// - secret NAME = "ENV_VAR_NAME"
+//   (logical secret mapping used by the `secret(...)` builtin)
 //
 // Path parameters are written as "/hello/:name" (converted later in interpreter).
 // Lines starting with '#' (after trimming) are comments and are ignored.
@@ -20,7 +22,9 @@
 pub mod ast;
 pub mod expr;
 
-use self::ast::{Body, ClassDef, EndpointDecl, FunctionDef, Method, Program, ServerDecl};
+use self::ast::{
+    Body, ClassDef, EndpointDecl, FunctionDef, Method, Program, SecretDecl, ServerDecl,
+};
 use self::expr::parse_expr;
 
 use std::collections::HashMap;
@@ -34,6 +38,7 @@ pub fn parse_program(source: &str) -> Result<Program, String> {
     let mut endpoints: Vec<EndpointDecl> = Vec::new();
     let mut functions: HashMap<String, FunctionDef> = HashMap::new();
     let mut classes: HashMap<String, ClassDef> = HashMap::new();
+    let mut secrets: Vec<SecretDecl> = Vec::new();
 
     while i < lines.len() {
         let raw_line = lines[i];
@@ -80,9 +85,13 @@ pub fn parse_program(source: &str) -> Result<Program, String> {
             }
             classes.insert(class_def.name.clone(), class_def);
             i = next_index;
+        } else if trimmed.starts_with("secret ") {
+            let secret = parse_secret_line(trimmed, i + 1)?;
+            secrets.push(secret);
+            i += 1;
         } else {
             return Err(format!(
-                "Line {}: unrecognized statement (expected 'server', 'endpoint', 'func', or 'class')",
+                "Line {}: unrecognized statement (expected 'server', 'endpoint', 'func', 'class', or 'secret')",
                 i + 1
             ));
         }
@@ -95,17 +104,20 @@ pub fn parse_program(source: &str) -> Result<Program, String> {
         endpoints,
         functions,
         classes,
+        secrets,
     })
 }
 
 // ---------- server ----------
 
 fn parse_server_line(line: &str, line_no: usize) -> Result<ServerDecl, String> {
-    // Expected: server 3000
+    // Expected:
+    //   server 3000
+    //   server 443 tls
     let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() != 2 {
+    if parts.len() < 2 || parts.len() > 3 {
         return Err(format!(
-            "Line {}: invalid server declaration; expected 'server <port>'",
+            "Line {}: invalid server declaration; expected 'server <port>' or 'server <port> tls'",
             line_no
         ));
     }
@@ -118,25 +130,64 @@ fn parse_server_line(line: &str, line_no: usize) -> Result<ServerDecl, String> {
         )
     })?;
 
-    Ok(ServerDecl { port })
+    let mut tls = false;
+    if parts.len() == 3 {
+        if parts[2] != "tls" {
+            return Err(format!(
+                "Line {}: expected 'tls' keyword after port or nothing",
+                line_no
+            ));
+        }
+        tls = true;
+    }
+
+    Ok(ServerDecl { port, tls })
+}
+
+// ---------- secret ----------
+
+fn parse_secret_line(line: &str, line_no: usize) -> Result<SecretDecl, String> {
+    // secret NAME = "ENV_VAR_NAME"
+    let rest = line
+        .strip_prefix("secret")
+        .ok_or_else(|| format!("Line {}: secret line must start with 'secret'", line_no))?
+        .trim_start();
+
+    let parts: Vec<&str> = rest.splitn(2, '=').collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "Line {}: invalid secret declaration; expected 'secret NAME = \"ENV_VAR\"'",
+            line_no
+        ));
+    }
+
+    let name = parts[0].trim();
+    if name.is_empty() {
+        return Err(format!("Line {}: secret name cannot be empty", line_no));
+    }
+
+    let rhs = parts[1].trim();
+    let (key, _) = extract_quoted(rhs, line_no, "secret env var")?;
+
+    Ok(SecretDecl {
+        name: name.to_string(),
+        key,
+    })
 }
 
 // ---------- endpoint ----------
 
 // Parse an endpoint starting at line index `start`.
-// Returns (endpoint, index_of_next_line_to_process)
 fn parse_endpoint(lines: &[&str], start: usize) -> Result<(EndpointDecl, usize), String> {
     let raw_line = lines[start];
     let line_no = start + 1;
     let line = raw_line.trim();
 
-    // 1. Strip the leading "endpoint"
     let rest = line
         .strip_prefix("endpoint")
         .ok_or_else(|| format!("Line {}: endpoint line must start with 'endpoint'", line_no))?
         .trim_start();
 
-    // 2. Method is the next word
     let mut parts = rest.splitn(2, ' ');
     let method_str = parts
         .next()
@@ -157,10 +208,8 @@ fn parse_endpoint(lines: &[&str], start: usize) -> Result<(EndpointDecl, usize),
         }
     };
 
-    // 3. Extract the path in quotes from the remainder of this line
     let (path, rest_after_path) = extract_quoted(rest_after_method, line_no, "path")?;
 
-    // 4. After the path we expect a colon on this same line
     let rest_after_path = rest_after_path.trim_start();
     let colon_pos = rest_after_path.find(':').ok_or_else(|| {
         format!(
@@ -170,14 +219,12 @@ fn parse_endpoint(lines: &[&str], start: usize) -> Result<(EndpointDecl, usize),
     })?;
     let after_colon = rest_after_path[colon_pos + 1..].trim_start();
 
-    // 5. The body may be on the same line after the colon...
     if !after_colon.is_empty() {
         let body = parse_body_spec(after_colon, line_no)?;
         let ep = EndpointDecl { method, path, body };
         return Ok((ep, start + 1));
     }
 
-    // 6. ...or on the next non-empty, non-comment line, possibly indented
     let mut j = start + 1;
     while j < lines.len() {
         let body_line_raw = lines[j];
@@ -190,7 +237,6 @@ fn parse_endpoint(lines: &[&str], start: usize) -> Result<(EndpointDecl, usize),
 
         let body = parse_body_spec(body_trimmed, j + 1)?;
         let ep = EndpointDecl { method, path, body };
-        // We consumed line j as the body, so the next line to process is j + 1
         return Ok((ep, j + 1));
     }
 
@@ -243,7 +289,6 @@ fn parse_func_line(line: &str, line_no: usize) -> Result<FunctionDef, String> {
     let params_str = &after_name[..close_paren];
     let after_parens = after_name[close_paren + 1..].trim_start();
 
-    // Expect colon
     let colon_pos = after_parens
         .find(':')
         .ok_or_else(|| format!("Line {}: expected ':' after parameter list", line_no))?;
@@ -297,18 +342,15 @@ fn parse_class(lines: &[&str], start: usize) -> Result<(ClassDef, usize), String
         let raw = lines[i];
         let trimmed = raw.trim();
 
-        // Skip blank lines and comments inside class
         if trimmed.is_empty() || trimmed.starts_with('#') {
             i += 1;
             continue;
         }
 
-        // If the line is not indented, we are out of the class body
         if !raw.starts_with(' ') && !raw.starts_with('\t') {
             break;
         }
 
-        // Method line: indent + name(params): expr
         let line_no = i + 1;
         let method_def = parse_method_line(trimmed, line_no)?;
         if methods.contains_key(&method_def.name) {
@@ -338,7 +380,6 @@ fn parse_method_line(line: &str, line_no: usize) -> Result<FunctionDef, String> 
     let params_str = &after_name[..close_paren];
     let after_parens = after_name[close_paren + 1..].trim_start();
 
-    // Expect colon
     let colon_pos = after_parens
         .find(':')
         .ok_or_else(|| format!("Line {}: expected ':' after method parameter list", line_no))?;
@@ -358,8 +399,6 @@ fn parse_method_line(line: &str, line_no: usize) -> Result<FunctionDef, String> 
 
 // ---------- helpers ----------
 
-/// Extract a double-quoted string from somewhere in `s`.
-/// Returns (content_without_quotes, rest_after_the_closing_quote).
 fn extract_quoted<'a>(s: &'a str, line_no: usize, what: &str) -> Result<(String, &'a str), String> {
     let start = s.find('"').ok_or_else(|| {
         format!(

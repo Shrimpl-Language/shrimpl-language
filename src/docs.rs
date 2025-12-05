@@ -43,7 +43,7 @@ pub fn build_diagnostics(program: &Program) -> Value {
     let errors: Vec<Value> = Vec::new();
 
     // 1) Duplicate endpoints (same method + path)
-    let mut seen = HashSet::<(String, String)>::new();
+    let mut seen = std::collections::HashSet::<(String, String)>::new();
     for ep in &program.endpoints {
         let m = match ep.method {
             Method::Get => "GET".to_string(),
@@ -143,14 +143,14 @@ fn collect_vars_expr(expr: &Expr, out: &mut HashSet<String>) {
         // Literals: they don't contain variable references
         Expr::Number(_) | Expr::Str(_) | Expr::Bool(_) => {}
 
-        // NEW: list literal – walk each element
+        // List literal – walk each element
         Expr::List(items) => {
             for e in items {
                 collect_vars_expr(e, out);
             }
         }
 
-        // NEW: map literal – walk each value expression (keys are plain strings)
+        // Map literal – walk each value expression (keys are plain strings)
         Expr::Map(entries) => {
             for (_k, v) in entries {
                 collect_vars_expr(v, out);
@@ -195,6 +195,23 @@ fn collect_vars_expr(expr: &Expr, out: &mut HashSet<String>) {
         Expr::Repeat { count, body } => {
             collect_vars_expr(count, out);
             collect_vars_expr(body, out);
+        }
+
+        // Try expression: walk try, catch, and finally bodies so diagnostics
+        // remain complete when new control-flow is introduced.
+        Expr::Try {
+            try_body,
+            catch_var: _,
+            catch_body,
+            finally_body,
+        } => {
+            collect_vars_expr(try_body, out);
+            if let Some(catch_expr) = catch_body {
+                collect_vars_expr(catch_expr, out);
+            }
+            if let Some(finally_expr) = finally_body {
+                collect_vars_expr(finally_expr, out);
+            }
         }
     }
 }

@@ -51,17 +51,20 @@
 //   openai_chat_json(user_message)   -> string pretty JSON
 //   openai_mcp_call(server_id, tool_name, args_json) -> string pretty JSON
 //
-//   Generic config + env helpers
-//   ----------------------------
+//   Generic config + env + secrets helpers
+//   --------------------------------------
 //   config_set(key, value)          -> string "ok"
 //   config_get(key)                 -> stored value or ""
 //   config_get(key, default)        -> stored value or default
 //   config_has(key)                 -> bool
 //   env(name)                       -> string env var value or ""
+//   secret(name)                    -> string secret value or error
+//   secret(name, default)           -> secret or default (no error)
 //
 // All complex objects are passed as JSON strings in Shrimpl.
 // Kids only see numbers, strings, booleans, and function calls.
 
+use crate::config;
 use crate::parser::ast::{BinOp, Expr, FunctionDef, Program};
 use std::collections::HashMap;
 
@@ -73,6 +76,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 use ureq;
+
 // ---------- runtime values ----------
 
 #[derive(Debug, Clone)]
@@ -125,19 +129,6 @@ impl Env {
     }
 }
 
-// ---------- generic app config store ----------
-
-#[derive(Debug, Default)]
-struct AppConfig {
-    entries: HashMap<String, ValueRuntime>,
-}
-
-static APP_CONFIG: OnceLock<Mutex<AppConfig>> = OnceLock::new();
-
-fn get_app_config() -> &'static Mutex<AppConfig> {
-    APP_CONFIG.get_or_init(|| Mutex::new(AppConfig::default()))
-}
-
 // ---------- OpenAI config ----------
 
 #[derive(Debug, Clone)]
@@ -180,7 +171,7 @@ fn openai_post(path: &str, body: &Value) -> Result<Value, String> {
     })?;
 
     let base = cfg.base_url.clone();
-    drop(cfg); // do not hold the lock during the HTTP call
+    drop(cfg);
 
     let url = if path.starts_with("http://") || path.starts_with("https://") {
         path.to_string()
@@ -248,12 +239,10 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
         }
 
         Expr::Call { name, args } => {
-            // First, user-defined functions
             if let Some(func) = program.functions.get(name) {
                 let arg_vals = eval_args(args, program, env)?;
                 eval_function(func, arg_vals, program, env)
             } else {
-                // Then, built-in functions
                 eval_builtin(name, args, program, env)
             }
         }
@@ -275,7 +264,6 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
             eval_function(method, arg_vals, program, env)
         }
 
-        // first-class list literal => JSON array string
         Expr::List(items) => {
             let mut arr = Vec::new();
             for item in items {
@@ -287,7 +275,6 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
             Ok(ValueRuntime::Str(txt))
         }
 
-        // first-class map literal => JSON object string
         Expr::Map(pairs) => {
             let mut obj = serde_json::Map::new();
             for (k, vexpr) in pairs {
@@ -313,7 +300,6 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
             if let Some(else_expr) = else_branch {
                 eval_expr(else_expr, program, env)
             } else {
-                // Default value for an if-expression with no branch taken.
                 Ok(ValueRuntime::Str(String::new()))
             }
         }
@@ -325,7 +311,6 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
                 return Err("repeat N times: N must be non-negative".to_string());
             }
 
-            // Hard safety bound to avoid runaway loops in teaching contexts.
             let steps = n.floor() as usize;
             if steps > 10_000 {
                 return Err("repeat N times: N is too large (max 10_000)".to_string());
@@ -338,7 +323,47 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> Result<ValueRuntime, 
 
             Ok(last)
         }
+
+        Expr::Try {
+            try_body,
+            catch_var,
+            catch_body,
+            finally_body,
+        } => eval_try_expr(try_body, catch_var, catch_body, finally_body, program, env),
     }
+}
+
+fn eval_try_expr(
+    try_body: &Expr,
+    catch_var: &Option<String>,
+    catch_body: &Option<Box<Expr>>,
+    finally_body: &Option<Box<Expr>>,
+    program: &Program,
+    env: &Env,
+) -> Result<ValueRuntime, String> {
+    let mut local_env = Env::with_parent(env);
+
+    let mut result: Result<ValueRuntime, String> = match eval_expr(try_body, program, &local_env) {
+        Ok(v) => Ok(v),
+        Err(err) => {
+            if let Some(catch_expr) = catch_body {
+                if let Some(name) = catch_var {
+                    local_env.set(name.clone(), ValueRuntime::Str(err.clone()));
+                }
+                eval_expr(catch_expr, program, &local_env)
+            } else {
+                Err(err)
+            }
+        }
+    };
+
+    if let Some(finally_expr) = finally_body {
+        if let Err(finally_err) = eval_expr(finally_expr, program, &local_env) {
+            result = Err(finally_err);
+        }
+    }
+
+    result
 }
 
 fn eval_args(args: &[Expr], program: &Program, env: &Env) -> Result<Vec<ValueRuntime>, String> {
@@ -466,35 +491,23 @@ fn eval_builtin(
             Ok(ValueRuntime::Number(best))
         }
 
-        // --- generic config + env helpers ---
+        // --- generic config + env + secrets helpers ---
         "config_set" => {
             if vals.len() != 2 {
                 return Err("config_set(key, value) expects 2 arguments".to_string());
             }
             let key = vals[0].to_string();
-            let value = vals[1].clone();
-
-            let lock = get_app_config();
-            let mut cfg = lock
-                .lock()
-                .map_err(|_| "App config mutex poisoned".to_string())?;
-            cfg.entries.insert(key, value);
-
+            let value_json = value_to_json(&vals[1]);
+            config::set_value(&key, value_json);
             Ok(ValueRuntime::Str("ok".to_string()))
         }
         "config_get" => {
-            // config_get(key) or config_get(key, default)
             if vals.is_empty() || vals.len() > 2 {
                 return Err("config_get(key, [default]) expects 1 or 2 arguments".to_string());
             }
             let key = vals[0].to_string();
-            let lock = get_app_config();
-            let cfg = lock
-                .lock()
-                .map_err(|_| "App config mutex poisoned".to_string())?;
-
-            if let Some(v) = cfg.entries.get(&key) {
-                Ok(v.clone())
+            if let Some(raw) = config::get_value(&key) {
+                Ok(json_to_runtime_value(&raw))
             } else if vals.len() == 2 {
                 Ok(vals[1].clone())
             } else {
@@ -506,11 +519,7 @@ fn eval_builtin(
                 return Err("config_has(key) expects exactly 1 argument".to_string());
             }
             let key = vals[0].to_string();
-            let lock = get_app_config();
-            let cfg = lock
-                .lock()
-                .map_err(|_| "App config mutex poisoned".to_string())?;
-            let exists = cfg.entries.contains_key(&key);
+            let exists = config::has_value(&key);
             Ok(ValueRuntime::Bool(exists))
         }
         "env" => {
@@ -520,6 +529,43 @@ fn eval_builtin(
             let name = vals[0].to_string();
             let value = env::var(&name).unwrap_or_else(|_| String::new());
             Ok(ValueRuntime::Str(value))
+        }
+        "secret" => {
+            // secret(name) or secret(name, default)
+            if vals.is_empty() || vals.len() > 2 {
+                return Err("secret(name, [default]) expects 1 or 2 arguments".to_string());
+            }
+            let logical = vals[0].to_string();
+
+            let env_key = config::secret_env_from_file(&logical)
+                .or_else(|| {
+                    program
+                        .secrets
+                        .iter()
+                        .find(|s| s.name == logical)
+                        .map(|s| s.key.clone())
+                })
+                .unwrap_or_else(|| logical.clone());
+
+            let default = if vals.len() == 2 {
+                Some(vals[1].clone())
+            } else {
+                None
+            };
+
+            match env::var(&env_key) {
+                Ok(v) => Ok(ValueRuntime::Str(v)),
+                Err(_) => {
+                    if let Some(d) = default {
+                        Ok(d)
+                    } else {
+                        Err(format!(
+                            "Secret '{}' (env '{}') is not set",
+                            logical, env_key
+                        ))
+                    }
+                }
+            }
         }
 
         // --- HTTP client helpers ---
@@ -918,8 +964,6 @@ fn eval_builtin(
             let model = cfg.model.clone();
             drop(cfg);
 
-            // This uses the Responses API in a generic way. You may need to
-            // adjust the exact shape based on your MCP/tool configuration.
             let payload = json!({
                 "model": model,
                 "input": format!(
@@ -940,19 +984,26 @@ fn eval_builtin(
 
 // ---------- helpers ----------
 
-// Convert a runtime value into serde_json::Value, trying to preserve structure
 fn value_to_json(v: &ValueRuntime) -> Value {
     match v {
         ValueRuntime::Number(n) => json!(n),
         ValueRuntime::Bool(b) => json!(*b),
-        ValueRuntime::Str(s) => {
-            // Try to parse as JSON; if that fails, store as plain string.
-            serde_json::from_str::<Value>(s).unwrap_or_else(|_| json!(s))
-        }
+        ValueRuntime::Str(s) => serde_json::from_str::<Value>(s).unwrap_or_else(|_| json!(s)),
     }
 }
 
-// Try to coerce a value to a number when needed
+fn json_to_runtime_value(v: &Value) -> ValueRuntime {
+    if let Some(b) = v.as_bool() {
+        ValueRuntime::Bool(b)
+    } else if let Some(n) = v.as_f64() {
+        ValueRuntime::Number(n)
+    } else if let Some(s) = v.as_str() {
+        ValueRuntime::Str(s.to_string())
+    } else {
+        ValueRuntime::Str(v.to_string())
+    }
+}
+
 fn as_number(v: &ValueRuntime) -> Result<f64, String> {
     match v {
         ValueRuntime::Number(n) => Ok(*n),
@@ -963,11 +1014,6 @@ fn as_number(v: &ValueRuntime) -> Result<f64, String> {
     }
 }
 
-// Coerce a value to a boolean (truthiness rules)
-//
-// - Bool: use the value directly.
-// - Number: 0.0 is false, anything else is true.
-// - String: empty "" is false, anything else is true.
 fn as_bool(v: &ValueRuntime) -> Result<bool, String> {
     match v {
         ValueRuntime::Bool(b) => Ok(*b),
@@ -982,10 +1028,8 @@ fn eval_binary(
     right: &ValueRuntime,
 ) -> Result<ValueRuntime, String> {
     match op {
-        // arithmetic --------------------------------------------------------
         BinOp::Add => match (left, right) {
             (ValueRuntime::Number(a), ValueRuntime::Number(b)) => Ok(ValueRuntime::Number(a + b)),
-            // String concatenation fallback: "foo" + x
             _ => Ok(ValueRuntime::Str(format!("{}{}", left, right))),
         },
 
@@ -1006,7 +1050,6 @@ fn eval_binary(
             Ok(ValueRuntime::Number(res))
         }
 
-        // comparisons -------------------------------------------------------
         BinOp::Eq => {
             let result = match (left, right) {
                 (ValueRuntime::Number(a), ValueRuntime::Number(b)) => a == b,
@@ -1038,7 +1081,6 @@ fn eval_binary(
             Ok(ValueRuntime::Bool(result))
         }
 
-        // boolean logic -----------------------------------------------------
         BinOp::And => {
             let a = as_bool(left)?;
             let b = as_bool(right)?;
@@ -1053,9 +1095,7 @@ fn eval_binary(
     }
 }
 
-// Helper: parse JSON array of numbers from a string
 fn parse_json_array_numbers(label: &str, text: &str) -> Result<Vec<f64>, String> {
-    // Try to parse as a JSON array; if that fails, treat the entire text as a single non-array value.
     let val: Value = serde_json::from_str(text).unwrap_or_else(|_| json!(text));
     let arr = if let Some(arr) = val.as_array() {
         arr
@@ -1079,13 +1119,11 @@ fn parse_json_array_numbers(label: &str, text: &str) -> Result<Vec<f64>, String>
     Ok(out)
 }
 
-// Lightweight DataFrame representation for internal use
 struct DataFrame {
     columns: Vec<String>,
-    rows: Vec<Value>, // each row is Value::Array([...])
+    rows: Vec<Value>,
 }
 
-// Helper: parse DF JSON of the form { "columns": [...], "rows": [[...], ...] }
 fn parse_df(text: &str) -> Result<DataFrame, String> {
     let val: Value =
         serde_json::from_str(text).map_err(|e| format!("df: not valid JSON table: {}", e))?;

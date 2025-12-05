@@ -18,20 +18,29 @@
   </a>
 </p>
 
+--------------------------------------
+
 ## Introduction
 
-Shrimpl is a small, beginner‑friendly programming language designed to bridge the gap between visual languages (like Scratch) and general‑purpose languages (like Python or JavaScript). It aims to be:
+Shrimpl is a beginner‑friendly programming language designed to bridge the gap between visual languages (like Scratch) and general‑purpose languages (like Python or JavaScript). It aims to be:
 
 * **Readable**: English‑like keywords, minimal punctuation, and indentation instead of braces.
 * **Approachable**: Designed so kids and new programmers can learn concepts gradually.
-* **Practical**: Powerful enough to build web APIs, perform data analysis, run simple machine‑learning workflows, and now experiment with AI helpers powered by OpenAI.
+* **Practical**: Powerful enough to build web APIs, perform data analysis, run simple machine‑learning workflows, and experiment with AI helpers powered by OpenAI.
 
 Shrimpl programs are interpreted by a Rust‑based runtime that can run on most platforms. A companion Language Server (LSP) and browser‑based API Studio make it easy to experiment, debug, and explore programs interactively.
 
-Shrimpl 0.5.2 adds optional **AI helpers** that allow endpoints to call OpenAI models using simple built‑in functions such as `openai_chat` and `openai_chat_json`. These helpers are designed so that:
+Shrimpl 0.5.x adds several important features:
 
-* Teachers or parents can configure an API key once (via environment variable or a setup call).
-* Students can use short, readable expressions to have Shrimpl "talk" to an AI model.
+* Optional **AI helpers** to call OpenAI models (`openai_chat`, `openai_chat_json`, `openai_mcp_call`).
+* New **control‑flow expressions**: booleans, comparisons, logical operators, `if / elif / else` expressions, and `repeat N times` loops.
+* A simple **configuration system** (`config/config.<env>.json`) for server options, JWT auth, request validation, and optional static type annotations.
+* Built‑in **JWT‑aware HTTP server** with protected paths and request‑scoped variables such as `jwt_sub`.
+* Per‑endpoint **JSON Schema validation** and automatic input sanitization.
+* An optional **static type checker** driven by config‑based annotations.
+* A small **lockfile** (`shrimpl.lock`) capturing version and hash information.
+
+The goal is to keep Shrimpl simple enough for kids and beginners, while gradually introducing real‑world concepts like APIs, authentication, validation, and types.
 
 ---
 
@@ -40,14 +49,14 @@ Shrimpl 0.5.2 adds optional **AI helpers** that allow endpoints to call OpenAI m
 ### Accessibility
 
 * Use **plain words** and **minimal punctuation**.
-* Rely on **indentation** to express structure instead of braces.
-* Favor **clear error messages** and **friendly diagnostics**.
-* Follow documentation guidelines inspired by writethedocs.org: short sentences, clear examples, and progressive disclosure of complexity.
+* Rely on **indentation** instead of braces.
+* Provide **clear error messages** and **friendly diagnostics**.
+* Follow documentation practices inspired by writethedocs.org: short sentences, clear examples, and progressive disclosure of complexity.
 
 ### Ease of Use
 
 * Provide **first‑class constructs** for building HTTP servers and endpoints.
-* Avoid heavy frameworks or configuration files.
+* Avoid heavy frameworks or complex configuration.
 * Make the default experience “type code, run, see results.”
 
 ### Expressiveness
@@ -56,20 +65,24 @@ Shrimpl supports:
 
 * Variables and expressions
 * Functions and classes (with static methods)
+* Control flow expressions (`if / elif / else`, `repeat`)
 * Built‑in helpers for text, numbers, vectors/tensors, dataframes, and linear regression
 * HTTP client utilities for calling external APIs
 * Optional AI helpers for calling OpenAI models (chat‑style responses and JSON payloads)
+* Optional static type annotations configured in JSON
 
 ### Safety
 
-* Runtime checks catch errors whenever possible and report **clear messages**.
+* Runtime checks catch errors wherever possible and report **clear messages**.
 * Static analysis warns about:
 
   * unused path parameters
   * unused function/method parameters
   * duplicate endpoints with the same method and path
+* JSON Schema validation rejects malformed requests before Shrimpl code runs.
+* A simple type checker can detect type mismatches between annotated functions and their bodies.
 
-These diagnostics are visible both in the terminal and inside editor integrations via the LSP.
+Diagnostics are visible both in the terminal, in `__shrimpl/diagnostics`, and inside editor integrations via the LSP.
 
 ---
 
@@ -77,9 +90,9 @@ These diagnostics are visible both in the terminal and inside editor integration
 
 ### Installing the Shrimpl Interpreter
 
-1. **Install Rust** (if you do not already have it):
+1. **Install Rust** (if it is not already installed):
 
-   * Visit the Rust website and install via `rustup`.
+   * Visit the official Rust website and install via `rustup`.
 
 2. **Install Shrimpl using Cargo**:
 
@@ -87,7 +100,7 @@ These diagnostics are visible both in the terminal and inside editor integration
    cargo install shrimpl
    ```
 
-   Alternatively, you can build the interpreter from source in this repository using:
+   Alternatively, build the interpreter from source in this repository:
 
    ```bash
    cargo build --release
@@ -95,15 +108,15 @@ These diagnostics are visible both in the terminal and inside editor integration
 
    The resulting binary will be in `target/release/shrimpl`.
 
-3. **Replit deployments**:
+3. **Replit deployments** (optional):
 
    * Ensure the Rust toolchain is available in `replit.nix`.
    * Add any necessary Rust dependencies.
-   * Configure `.replit` to run the Shrimpl server (for example using `cargo run --bin shrimpl` or the provided run command).
+   * Configure `.replit` to run the Shrimpl server (for example `cargo run --bin shrimpl -- --file app.shr run`).
 
 ### Creating Your First Program
 
-1. In your project directory, create a file named **`app.shr`**. Shrimpl scripts always use the `.shr` extension.
+1. In the project directory, create a file named **`app.shr`**. Shrimpl scripts always use the `.shr` extension.
 
 2. Put this minimal program in `app.shr`:
 
@@ -131,7 +144,7 @@ These diagnostics are visible both in the terminal and inside editor integration
    http://localhost:3000/
    ```
 
-   You should see:
+   The response should be:
 
    ```text
    Hello, Shrimpl!
@@ -143,26 +156,129 @@ These diagnostics are visible both in the terminal and inside editor integration
    shrimpl --file app.shr check
    ```
 
+6. To inspect all static diagnostics as JSON, use:
+
+   ```bash
+   shrimpl --file app.shr diagnostics
+   ```
+
+   This is the same data shown in the API Studio diagnostics panel.
+
 ---
 
-## Language Overview
+## Project Files and Environments
 
-### Indentation and Structure
+### Single Entry File and Imports
 
-Shrimpl uses **indentation** to define blocks. Each statement is on its own line; nested blocks are indented consistently (two spaces is typical). Examples:
+Shrimpl programs start from a **single entry file**, usually `app.shr`.
+
+To keep larger projects organized, Shrimpl supports a simple import mechanism:
 
 ```shrimpl
+# app.shr
 server 3000
 
-endpoint GET "/":
-  "Hello, Shrimpl!"  # body is indented
+import "users.shr"
+import "math_utils.shr"
+
+endpoint GET "/": "Welcome to Shrimpl"
 ```
 
-Mixing spaces and tabs is discouraged and may cause parsing issues. Choose one (spaces are recommended) and keep it consistent.
+In `users.shr`:
+
+```shrimpl
+# users.shr
+
+func user_greeting(name):
+  "Hello, " + name
+
+endpoint GET "/hello/:name":
+  user_greeting(name)
+```
+
+Notes:
+
+* `import "relative/path/file.shr"` inlines the contents of the other file.
+* Paths are resolved **relative to the file that performs the import**.
+* Each file is loaded only once. Cycles (`a.shr` importing `b.shr` which imports `a.shr`) are ignored after the first visit.
+
+### Config Files (`config/config.<env>.json`)
+
+Shrimpl loads configuration from a JSON file based on the current environment:
+
+* Environment name is taken from `SHRIMPL_ENV` or defaults to `"dev"`.
+* Config file path: `config/config.<env>.json` (for example `config/config.dev.json`).
+
+A typical config file:
+
+```json
+{
+  "server": {
+    "port": 3000,
+    "tls": false
+  },
+  "auth": {
+    "jwt_secret_env": "SHRIMPL_JWT_SECRET",
+    "protected_paths": ["/secure", "/admin"],
+    "allow_missing_on": ["/health"]
+  },
+  "validation": {
+    "schemas": {
+      "/login": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "email": { "type": "string", "format": "email" },
+          "password": { "type": "string", "minLength": 8 }
+        }
+      }
+    }
+  },
+  "types": {
+    "functions": {
+      "add": {
+        "params": ["number", "number"],
+        "result": "number"
+      }
+    }
+  },
+  "secrets": {
+    "env": {
+      "OPENAI": "SHRIMPL_OPENAI_API_KEY"
+    }
+  },
+  "values": {
+    "greeting": "Hello Shrimpl",
+    "threshold": 0.75,
+    "debug": true
+  }
+}
+```
+
+What each section controls:
+
+* `server`: Port and TLS flag (can override `server` declaration in Shrimpl code).
+* `auth`: JWT configuration and which paths require authentication.
+* `validation`: Per‑path JSON Schemas for request body validation.
+* `types`: Type annotations for functions (used by the static type checker).
+* `secrets.env`: Mapping from logical secret names to environment variable names.
+* `values`: Arbitrary key/value pairs accessible via built‑ins (if enabled in the runtime).
+
+### Lockfile (`shrimpl.lock`)
+
+When the program runs, the runtime may create a `shrimpl.lock` file that captures:
+
+* Shrimpl CLI version.
+* Environment name (`SHRIMPL_ENV`).
+* Entry path (`app.shr`).
+* SHA‑256 hash of the entry file.
+* Timestamp of generation.
+
+This file is informational. It is safe to delete; it will be regenerated when needed.
 
 ---
 
-## Servers
+## Servers and TLS
 
 A Shrimpl program that exposes HTTP endpoints must declare a **server**:
 
@@ -171,10 +287,25 @@ server 3000
 ```
 
 * The number is the **port** the server listens on.
-* Only **one** `server` declaration is allowed per program.
+* Exactly **one** `server` declaration is allowed per program.
 * The server must appear **before** any `endpoint` declarations.
 
-If multiple servers are declared, the interpreter will issue a warning.
+Configuration from `config/config.<env>.json` can override the port and TLS flag if present.
+
+### Enabling TLS (HTTPS)
+
+To serve HTTPS directly from Shrimpl:
+
+```shrimpl
+server 3000 tls
+```
+
+In this mode the runtime expects certificate files, configured via environment variables:
+
+* `SHRIMPL_TLS_CERT` (defaults to `cert.pem`)
+* `SHRIMPL_TLS_KEY` (defaults to `key.pem`)
+
+Both files should be PEM‑encoded. When TLS is enabled, the server binds HTTPS on `0.0.0.0:<port>`.
 
 ---
 
@@ -186,7 +317,7 @@ Endpoints declare HTTP routes. An endpoint has:
 * A **path**: a quoted string, optionally including path parameters like `"/hello/:name"`.
 * A **body**: an expression that determines the response.
 
-The body expression can live on the same line as the endpoint or on the following indented line. Internally, Shrimpl parses the body as a normal expression, so you can call any built‑in or user‑defined function (including AI helpers like `openai_chat`).
+The body expression can live on the same line as the endpoint or on the following indented line.
 
 ### Basic Example
 
@@ -204,7 +335,7 @@ endpoint GET "/hello/:name":
 ```
 
 * Request: `GET /hello/Aisen`
-* The variable `name` becomes `"Aisen"`.
+* Variable `name` becomes `"Aisen"`.
 * Response: `"Hello Aisen"`.
 
 ### Query Parameters
@@ -217,123 +348,212 @@ endpoint GET "/greet":
 ```
 
 * Request: `/greet?name=Aisen`
-* The variable `name` is set to `"Aisen"`.
+* Variable `name` is set to `"Aisen"`.
+
+If a path parameter and query parameter share a name, the **path** parameter wins.
+
+### POST Endpoints and the `body` Variable
+
+For `POST` endpoints, the request body is exposed as a special variable named `body`:
+
+```shrimpl
+endpoint POST "/echo":
+  body
+```
+
+* The server reads the raw body bytes.
+* If validation (JSON Schema) is configured for this path, the body is parsed as JSON, validated, sanitized, and then re‑serialized back into `body`.
+* If no validation schema is configured, `body` is simply the raw text.
+
+A typical JSON endpoint:
+
+```shrimpl
+endpoint POST "/login":
+  # Assuming validation ensures email/password are present
+  # and that body is a well‑formed JSON string.
+  "Received login payload: " + body
+```
 
 ### Text vs JSON Endpoints
 
-The endpoint body can return **text** or **JSON**:
+The endpoint body can return **text** or **JSON**.
 
 ```shrimpl
 # Plain text
 endpoint GET "/text": "Just a string"
 
-# JSON
+# Constant JSON
 endpoint GET "/info":
   json { "name": "Shrimpl", "version": 0.5 }
 ```
 
-When using `json { ... }`, the body must be a **constant** JSON object (expressions are not evaluated inside the JSON literal).
+When using `json { ... }`, the body must be a **constant** JSON object; expressions are **not** evaluated inside the JSON literal.
 
-### AI‑Powered Endpoints (OpenAI Helpers)
+When using AI helpers (`openai_chat`, `openai_chat_json`), the return value is a string. The server sends it as a text response unless it is itself JSON.
 
-Shrimpl 0.5.2 introduces optional OpenAI helpers that let an endpoint call an AI model and return its answer. These helpers are available as **built‑in functions** that you can use anywhere you can write an expression.
+### JWT‑Aware Variables (`jwt_sub`, `jwt_scope`, `jwt_role`)
 
-A minimal AI‑powered endpoint looks like this:
+When JWT auth is enabled (see the **Authentication and JWT** section), Shrimpl automatically injects three variables into every request:
+
+* `jwt_sub`: subject / user id (string)
+* `jwt_scope`: optional scope string
+* `jwt_role`: optional role string
+
+These variables always exist and default to empty strings if no token is present or if the path is not protected.
+
+Example:
 
 ```shrimpl
-server 3000
-
-endpoint GET "/chat/:msg":
-  openai_chat("User said: " + msg)
+endpoint GET "/secure/profile":
+  if jwt_sub == "":
+    "No user bound to this token"
+  else:
+    "Hello user " + jwt_sub
 ```
 
-If an appropriate OpenAI API key is configured (see the AI Helpers section below), calling:
-
-```text
-GET /chat/Hello
-```
-
-will send the prompt `"User said: Hello"` to an OpenAI model and return the model’s reply as plain text.
-
-Because endpoint bodies are just expressions, you can combine AI helpers with other functions, such as formatting, numeric conversions, or even other API calls.
+This allows endpoints to read identity information without worrying about missing variables.
 
 ---
 
-## Expressions
+## Expressions and Data Types
 
-Shrimpl supports a small but expressive set of expression features:
+Shrimpl expressions are intentionally small and consistent. This version introduces booleans, comparisons, logical operators, and expression‑level control flow.
 
-### Literals
+### Literal Values
 
-* Numbers: `42`, `3.14`
-* Strings: `"Hello"`
-* JSON objects: `json { "key": 123 }`
+Supported literals:
+
+* Numbers: `42`, `3.14`, `-10`
+* Strings: `"Hello"`, `"abc123"`
+* Booleans: `true`, `false`
+* Constant JSON: `json { "key": 123 }`
+
+### Boolean Values and Truthiness
+
+Booleans are first‑class values in Shrimpl:
+
+```shrimpl
+endpoint GET "/bools":
+  if true:
+    "This is always returned"
+  else:
+    "Never reached"
+```
+
+Truthiness rules used in `if`, `and`, `or`, and `repeat`:
+
+* `Bool`: `true` and `false` behave as expected.
+* `Number`: `0.0` is false; any other number is true.
+* `String`: `""` is false; any other string is true.
 
 ### Variables
 
-Names starting with a letter or underscore. Common sources:
+Names start with a letter or underscore and may contain letters, digits, or underscores.
 
-* Path parameters (e.g., `:id` -> `id`)
-* Query parameters (e.g., `?foo=bar` -> `foo`)
+Common sources:
+
+* Path parameters (`:id` → `id`)
+* Query parameters (`?foo=bar` → `foo`)
 * Function parameters
 * Method parameters
+* Special variables: `body`, `jwt_sub`, `jwt_scope`, `jwt_role`
 
-### Operators
+### Operators and Precedence
 
-* Arithmetic: `+`, `-`, `*`, `/` (normal precedence)
-* String concatenation: `+` (if either side is a string, result is a string)
+Shrimpl supports arithmetic, comparison, and logical operators.
 
-### Function and Method Calls
+Arithmetic:
 
-* Function call: `funcName(arg1, arg2)`
-* Class method call: `ClassName.methodName(arg1, arg2)`
+* `+`, `-`, `*`, `/`
+* If either operand of `+` is a string, Shrimpl performs string concatenation instead of numeric addition.
 
-AI helpers follow the same rules. For example:
+Comparison operators:
+
+* `==`, `!=`, `<`, `<=`, `>`, `>=`
+
+Logical operators:
+
+* `and`, `or`
+
+Operator precedence (from tightest to loosest):
+
+1. `*`, `/`
+2. `+`, `-`
+3. Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
+4. `and`
+5. `or`
+
+Example:
 
 ```shrimpl
-openai_chat("Explain Shrimpl in one sentence.")
+endpoint GET "/logic":
+  if 2 * 3 + 1 == 7 and true:
+    "Math works"
+  else:
+    "Something is off"
 ```
 
-is just a function call whose result is a string.
+### Control‑Flow Expressions
 
----
+#### `if / elif / else` as an Expression
 
-## Variables and Data Types
+Shrimpl uses an expression‑oriented `if`:
 
-Shrimpl is **dynamically typed**. Values can be:
+```shrimpl
+if condition1: expr1
+elif condition2: expr2
+else: expr3
+```
 
-* Numbers
-* Strings
-* JSON arrays/objects
+This form can appear anywhere an expression is allowed:
 
-### Core Built‑ins
+```shrimpl
+endpoint GET "/age":
+  if number(age) < 13:
+    "child"
+  elif number(age) < 18:
+    "teen"
+  else:
+    "adult"
+```
 
-These functions convert between data types or operate on them:
+Rules:
 
-| Built‑in                              | Description                                             |
-| ------------------------------------- | ------------------------------------------------------- |
-| `number(x)`                           | Convert string or number `x` to a floating‑point.       |
-| `string(x)`                           | Convert any value to a string.                          |
-| `len(x)`                              | Length of a string.                                     |
-| `upper(x)`                            | Convert a string to uppercase.                          |
-| `lower(x)`                            | Convert a string to lowercase.                          |
-| `sum(a,b,...)`                        | Sum of numbers.                                         |
-| `avg(a,b,...)`                        | Average of numbers.                                     |
-| `min(a,b,...)`                        | Minimum of numbers.                                     |
-| `max(a,b,...)`                        | Maximum of numbers.                                     |
-| `openai_set_api_key(k)`               | Set or override the OpenAI API key used by AI helpers.  |
-| `openai_set_system_prompt(p)`         | Set a global system prompt (role) for AI helpers.       |
-| `openai_chat(msg)`                    | Call an OpenAI chat model and return the reply as text. |
-| `openai_chat_json(msg)`               | Call an OpenAI chat model and return full JSON as text. |
-| `openai_mcp_call(server, tool, args)` | Experimental helper for Responses/MCP flows.            |
+* Conditions are evaluated in order using truthiness rules.
+* The first branch whose condition is true returns its expression value.
+* If no branch matches and there is no `else`, the result is an empty string (`""`).
 
-The OpenAI helpers are described in more detail in the **AI Helpers (OpenAI Integration)** section below.
+#### `repeat N times: expr`
+
+A bounded loop expression:
+
+```shrimpl
+repeat N times: body_expr
+```
+
+Example:
+
+```shrimpl
+func repeat_greet(name, n):
+  repeat number(n) times:
+    "Hello " + name  # result of last iteration is returned
+
+endpoint GET "/repeat-greet":
+  repeat_greet(name, n)
+```
+
+Behavior:
+
+* `N` is evaluated once and converted to a number.
+* Negative values are treated as zero.
+* There is a hard safety cap (for example 10,000 iterations) to avoid runaway loops.
+* The result is the value of the **last** iteration, or `""` if `N == 0`.
 
 ---
 
 ## Functions
 
-Define reusable calculations with the `func` keyword:
+Define reusable computations with the `func` keyword:
 
 ```shrimpl
 func greet(name):
@@ -342,19 +562,19 @@ func greet(name):
 
 Rules:
 
-* Syntax: `func name(param1, param2, ...): <expression>`
+* Syntax: `func name(param1, param2, ...): expression`
 * The body is a **single expression** whose value is returned.
-* Parameters are local variables inside the function body.
-* Unused parameters trigger a **warning** from the static analyzer.
+* Parameters are local to the function.
+* Unused parameters trigger a static **warning**.
 
-Example usage inside an endpoint:
+Example usage:
 
 ```shrimpl
 endpoint GET "/welcome/:name":
   greet(name) + "!"
 ```
 
-You can also wrap AI helpers inside functions so that students can call them with simpler signatures. For example:
+AI‑friendly wrapper:
 
 ```shrimpl
 func tutor(topic):
@@ -368,7 +588,7 @@ endpoint GET "/tutor/:topic":
 
 ## Classes
 
-Shrimpl supports simple **classes with static methods**. Use them to group related functionality:
+Shrimpl supports **classes with static methods** for grouping related functions:
 
 ```shrimpl
 class Math:
@@ -378,7 +598,7 @@ class Math:
 
 * Syntax: `class Name:` followed by indented method definitions.
 * Methods: `methodName(params): expression`.
-* Methods do not have access to `self` or instance data; they are purely static.
+* Methods have no `self` and act like static helpers.
 
 Usage:
 
@@ -387,19 +607,40 @@ endpoint GET "/double/:n":
   Math.double(number(n))
 ```
 
-You can also group AI helpers in a class if you want a more “object‑like” style, though the built‑ins are usually enough for beginner programs.
+Classes can also be used to group domain‑specific helpers, such as formatting routines or domain logic.
 
 ---
 
 ## Built‑In Libraries
 
+### Core Built‑ins
+
+These helpers operate on basic values:
+
+| Built‑in                              | Description                                               |
+| ------------------------------------- | --------------------------------------------------------- |
+| `number(x)`                           | Convert string or number `x` to a floating‑point number.  |
+| `string(x)`                           | Convert any value to a string.                            |
+| `len(x)`                              | Length of a string.                                       |
+| `upper(x)`                            | String to uppercase.                                      |
+| `lower(x)`                            | String to lowercase.                                      |
+| `sum(a,b,...)`                        | Sum of numbers.                                           |
+| `avg(a,b,...)`                        | Average of numbers.                                       |
+| `min(a,b,...)`                        | Minimum of numbers.                                       |
+| `max(a,b,...)`                        | Maximum of numbers.                                       |
+| `openai_set_api_key(k)`               | Set/override the OpenAI API key used by AI helpers.       |
+| `openai_set_system_prompt(p)`         | Set a global system prompt (role) for AI helpers.         |
+| `openai_chat(msg)`                    | Call an OpenAI chat model; return reply text.             |
+| `openai_chat_json(msg)`               | Call an OpenAI chat model; return full JSON as text.      |
+| `openai_mcp_call(server, tool, args)` | Experimental helper for MCP/tool‑calling style workflows. |
+
 ### HTTP Client
 
-Use these to call external APIs:
+Helpers for calling external APIs:
 
 | Function             | Description                                                               |
 | -------------------- | ------------------------------------------------------------------------- |
-| `http_get(url)`      | Send HTTP GET request to `url`, return **raw body** as a string.          |
+| `http_get(url)`      | Send HTTP GET to `url`, return raw body as a string.                      |
 | `http_get_json(url)` | GET `url`, parse response as JSON, and return pretty‑printed JSON string. |
 
 Example:
@@ -411,12 +652,12 @@ endpoint GET "/pokemon/:id":
 
 ### Vector and Tensor Operations
 
-The runtime includes helpers for numeric arrays:
+Helpers for numeric arrays:
 
 | Function           | Description                                                                  |
 | ------------------ | ---------------------------------------------------------------------------- |
 | `vec(a, b, ...)`   | Create a JSON array `[a, b, ...]`. Numeric strings are converted to numbers. |
-| `tensor_add(a, b)` | Elementwise add two JSON arrays of equal length; returns a JSON array.       |
+| `tensor_add(a, b)` | Element‑wise add two JSON arrays of equal length; returns a JSON array.      |
 | `tensor_dot(a, b)` | Dot product of two JSON arrays of equal length; returns a number.            |
 
 Example:
@@ -440,11 +681,11 @@ Dataframes are represented as JSON objects:
 }
 ```
 
-| Function                   | Description                                                               |
-| -------------------------- | ------------------------------------------------------------------------- |
-| `df_from_csv(url)`         | Download CSV from `url` and return dataframe JSON. Numbers become floats. |
-| `df_head(df_json, n)`      | Return first `n` rows of the dataframe.                                   |
-| `df_select(df_json, cols)` | Return new dataframe with only specified columns (`"col1,col2"`).         |
+| Function                   | Description                                                                |
+| -------------------------- | -------------------------------------------------------------------------- |
+| `df_from_csv(url)`         | Download CSV from `url` and return dataframe JSON. Numbers become floats.  |
+| `df_head(df_json, n)`      | Return first `n` rows of the dataframe.                                    |
+| `df_select(df_json, cols)` | Return new dataframe with only specified columns (comma‑separated string). |
 
 Examples:
 
@@ -458,7 +699,9 @@ endpoint GET "/head":
 
 ### Machine Learning (Linear Regression)
 
-Shrimpl 0.5 includes basic linear regression support. Models are JSON objects:
+Simple linear regression is supported.
+
+Model JSON shape:
 
 ```json
 { "kind": "linreg", "a": 2.0, "b": 0.0 }
@@ -467,7 +710,7 @@ Shrimpl 0.5 includes basic linear regression support. Models are JSON objects:
 | Function                        | Description                                                     |
 | ------------------------------- | --------------------------------------------------------------- |
 | `linreg_fit(xs_json, ys_json)`  | Train regression model from arrays `xs` and `ys` (JSON arrays). |
-| `linreg_predict(model_json, x)` | Predict `y` from model and input `x`; returns a number.         |
+| `linreg_predict(model_json, x)` | Predict `y` from a model and input `x`; returns a number.       |
 
 Examples:
 
@@ -483,59 +726,49 @@ endpoint GET "/predict":
 
 ## AI Helpers (OpenAI Integration)
 
-Shrimpl 0.5.2 adds **optional OpenAI helpers** that let programs talk to AI models using simple function calls. These helpers are meant to be used in educational settings where an adult configures an API key and students experiment with friendly prompts.
+AI helpers are optional built‑ins that talk to OpenAI models.
 
-> Important: AI helpers are optional. Shrimpl runs perfectly fine without any API key set. If no OpenAI key is configured and a program calls one of these helpers, the runtime will return an error message string instead of crashing.
+If no API key is configured and a program calls these helpers, they return an error string instead of crashing. This keeps the language safe for classrooms.
 
 ### Configuring the OpenAI API Key
 
-The OpenAI helpers look for an API key in this order:
+The helpers look for an API key in this order:
 
-1. Environment variable `SHRIMPL_OPENAI_API_KEY`
-2. Environment variable `OPENAI_API_KEY`
-3. A key set at runtime via `openai_set_api_key("...")`
+1. `SHRIMPL_OPENAI_API_KEY`
+2. `OPENAI_API_KEY`
+3. A value set at runtime via `openai_set_api_key("...")`
 
-The simplest setup for a workshop or classroom is to set an environment variable **before** running Shrimpl:
+The simplest setup:
 
 ```bash
-export SHRIMPL_OPENAI_API_KEY="sk‑example..."
-
+export SHRIMPL_OPENAI_API_KEY="sk-example..."
 shrimpl --file app.shr run
 ```
 
-Alternatively, you can call the helper inside your Shrimpl code (for example, in a setup endpoint that only teachers can hit):
+Alternatively, set the key from Shrimpl code (for example in a teacher‑only endpoint):
 
 ```shrimpl
 endpoint POST "/setup":
   openai_set_api_key(secret)
 ```
 
-In that pattern, the teacher would send a POST request with a `secret` parameter and the server would remember the key for later calls.
-
 ### Setting a System Prompt (Role)
 
-AI models behave differently depending on their “system prompt” (sometimes called the role). Shrimpl exposes this via:
+Models behave differently depending on their system prompt. Shrimpl exposes this via:
 
 ```shrimpl
 openai_set_system_prompt("You are a friendly Shrimpl tutor for kids.")
 ```
 
-Once this is set, calls to `openai_chat` and `openai_chat_json` will prepend that system message to the conversation, so the model consistently answers in that role.
-
-A typical pattern is to call this once when the program starts or in a dedicated configuration endpoint:
-
-```shrimpl
-endpoint POST "/configure_ai":
-  openai_set_system_prompt("Explain things clearly in one or two paragraphs.")
-```
+Once set, this prompt is included in all subsequent AI calls.
 
 ### `openai_chat(message)`
 
-`openai_chat` is the most student‑friendly helper. It:
+`openai_chat` is the simplest helper:
 
-1. Builds a chat request with the current system prompt (if any) and the user message.
-2. Sends it to an OpenAI chat model (by default `gpt‑4.1‑mini`).
-3. Returns the model’s reply text as a normal Shrimpl string.
+1. Builds a chat request with the current system prompt (if any).
+2. Sends it to a chat model (for example `gpt-4.1-mini`).
+3. Returns the reply text as a string.
 
 Example endpoint:
 
@@ -546,19 +779,17 @@ endpoint GET "/chat/:msg":
   openai_chat("Student says: " + msg)
 ```
 
-If you call:
+Calling:
 
 ```text
 GET /chat/What%20is%20a%20variable%3F
 ```
 
-the endpoint will return a short explanation generated by the model.
-
-Because `openai_chat` returns a string, you can further process or format it with other functions, such as `upper`, `lower`, or `string`.
+returns an explanation generated by the model.
 
 ### `openai_chat_json(message)`
 
-Sometimes you want to see the **full JSON response** from the model (for debugging, teaching, or building custom tools). `openai_chat_json` works like `openai_chat`, but returns the whole JSON response as a pretty‑printed string.
+`openai_chat_json` is similar to `openai_chat`, but returns the **full JSON response** as a pretty‑printed string. This is useful for debugging or advanced teaching.
 
 Example:
 
@@ -567,292 +798,444 @@ endpoint GET "/raw_chat/:msg":
   openai_chat_json(msg)
 ```
 
-This is useful in classrooms when you want to show students what the model actually returns: choices, usage, and other metadata.
-
 ### `openai_mcp_call(server_id, tool_name, args)` (Experimental)
 
-`openai_mcp_call` is an **experimental helper** meant for more advanced setups where Shrimpl is used together with tool‑calling or MCP‑style servers.
+`openai_mcp_call` is designed for advanced tool‑calling/MCP workflows.
 
-Its signature is:
+Signature:
 
 ```shrimpl
 openai_mcp_call(server, tool, args)
 ```
 
-* `server`: a string that identifies which tool server or configuration to talk to.
-* `tool`: the name of the tool to call.
-* `args`: a string containing JSON for the tool arguments.
-
-The helper formats these into a prompt and sends a request using OpenAI’s Responses API. The raw JSON result is returned as a pretty‑printed string.
+* `server`: which tool server/config to talk to.
+* `tool`: tool name.
+* `args`: arguments as a JSON string.
 
 Example (simplified):
 
 ```shrimpl
 endpoint POST "/tools/query":
-  openai_mcp_call("math‑server", "solve_equation", args)
+  openai_mcp_call("math-server", "solve_equation", args)
 ```
 
-For most beginner and classroom scenarios, you can ignore this helper and focus on `openai_chat` and `openai_chat_json`.
+For most beginner use cases, focusing on `openai_chat` and `openai_chat_json` is enough.
 
-### Safety and Error Messages
+### Error Handling for AI Calls
 
-If something goes wrong during an AI call (for example, no API key is configured or the network fails), the helper will return a string that describes the error. You can either show this directly to the user or wrap it in your own message:
+If an AI call fails (missing key, network issues, etc.), the helpers return an error message string. It can be shown directly or wrapped:
 
 ```shrimpl
 endpoint GET "/safe_chat/:msg":
   "AI says: " + openai_chat(msg)
 ```
 
-Teachers may also want to guide students on responsible prompt writing and explain that AI outputs are not always correct.
+---
+
+## Authentication and JWT
+
+Shrimpl supports optional JWT‑based authentication configured via `config/config.<env>.json`.
+
+### Configuring JWT Auth
+
+In the config file:
+
+```json
+"auth": {
+  "jwt_secret_env": "SHRIMPL_JWT_SECRET",
+  "protected_paths": ["/secure", "/admin"],
+  "allow_missing_on": ["/health"]
+}
+```
+
+Fields:
+
+* `jwt_secret_env`: name of the environment variable that holds the HMAC secret for verifying JWTs.
+* `protected_paths`: list of path prefixes that **require** a valid JWT (for example `"/secure"`).
+* `allow_missing_on`: list of path prefixes that are always accessible even if they overlap with protected paths (for example `"/health"`).
+
+At runtime:
+
+* Protected paths expect an `Authorization: Bearer <token>` header.
+* Tokens are validated using the configured secret.
+* On failure, the server returns `401` JSON errors:
+
+  * `{"error":"missing bearer token"}`
+  * `{"error":"unauthorized","detail":"..."}`
+
+### JWT Claims Exposed to Shrimpl Code
+
+Valid tokens are decoded into a claim set that includes:
+
+* `sub` → exposed as `jwt_sub`
+* `scope` → exposed as `jwt_scope`
+* `role` → exposed as `jwt_role`
+
+These variables are always defined and default to `""` when no token is present or when auth is not required.
+
+Example:
+
+```shrimpl
+endpoint GET "/secure/hello":
+  if jwt_sub == "":
+    "You are not authenticated"
+  else:
+    "Hello, user " + jwt_sub
+```
+
+This allows beginners to work with authentication concepts without needing to parse headers manually.
+
+---
+
+## Request Validation and Sanitization
+
+Shrimpl can validate JSON request bodies using JSON Schema defined in the config file.
+
+### Declaring Schemas
+
+In `config/config.<env>.json`:
+
+```json
+"validation": {
+  "schemas": {
+    "/login": {
+      "type": "object",
+      "required": ["email", "password"],
+      "properties": {
+        "email": { "type": "string", "format": "email" },
+        "password": { "type": "string", "minLength": 8 }
+      }
+    }
+  }
+}
+```
+
+* Keys under `schemas` are Shrimpl endpoint paths (for example `"/login"`).
+* Schema format is based on JSON Schema Draft 7.
+
+### How Validation Works
+
+For a `POST` to a path with a schema:
+
+1. The raw body is read as a string.
+2. The server attempts to parse it as JSON.
+3. If parsing fails → `400` `{"error":"invalid_json","detail":"..."}`.
+4. The JSON is validated against the schema.
+5. If validation fails → `400` with `{"error":"validation_failed","detail":"..."}`.
+6. If validation succeeds, the JSON is **sanitized** and re‑serialized.
+7. The resulting sanitized string is stored in the `body` variable and passed to Shrimpl code.
+
+Sanitization currently:
+
+* Trims whitespace from all string values recursively (objects and arrays).
+
+Example endpoint that assumes valid JSON:
+
+```shrimpl
+endpoint POST "/login":
+  "Sanitized login payload: " + body
+```
+
+If a schema is misconfigured, the server responds with `500` and `{"error":"schema_compile_error","detail":"..."}` to avoid blaming the user.
+
+---
+
+## Optional Static Type Checker
+
+Shrimpl includes an optional type checker that uses annotations defined in `config/config.<env>.json`.
+
+### Declaring Function Types
+
+Under `"types"` in config:
+
+```json
+"types": {
+  "functions": {
+    "add": {
+      "params": ["number", "number"],
+      "result": "number"
+    },
+    "greet": {
+      "params": ["string"],
+      "result": "string"
+    }
+  }
+}
+```
+
+Supported type names:
+
+* `number`, `float`, `int`, `integer` → numeric
+* `string`, `str` → string
+* `bool`, `boolean` → boolean
+* Anything else → `any`
+
+### What the Type Checker Does
+
+For each annotated function:
+
+1. Checks that the number of parameters in Shrimpl matches `params` length.
+2. Builds a parameter type environment from `params`.
+3. Infers a simple type for the function body using:
+
+   * Literals (`Number`, `String`, `Bool`).
+   * Variables (looked up in the environment or treated as `any`).
+   * Binary operations (arithmetic yields `number`, comparisons yield `bool`, `and`/`or` yield `bool`).
+   * Calls to annotated functions (using their declared result type).
+   * `if` expressions (join of branch types; if mixed, treated as `any`).
+   * `repeat` expressions (type of the body or `any`).
+4. If the inferred body type is not assignable to the declared `result`, an error is produced.
+
+Types are **assignable** if:
+
+* The expected type is `any`, or
+* `actual == expected`, or
+* `actual` is `any`.
+
+Diagnostics are reported as JSON objects with fields like:
+
+```json
+{
+  "kind": "error",
+  "scope": "function",
+  "name": "add",
+  "message": "Return type mismatch: expected number, got string"
+}
+```
+
+### Viewing Type Diagnostics
+
+Type diagnostics are included in:
+
+* `shrimpl --file app.shr diagnostics`
+* `GET /__shrimpl/diagnostics` (JSON)
+* API Studio diagnostics panel
+
+Because Shrimpl is still dynamically typed at runtime, type annotations are always optional. They provide **extra feedback**, not hard compilation barriers.
 
 ---
 
 ## JSON Responses
 
-To return JSON, prefix the body with `json` and provide a constant JSON object:
+To return constant JSON, use the `json` prefix:
 
 ```shrimpl
 endpoint GET "/info":
   json { "name": "Shrimpl", "version": 0.5 }
 ```
 
-* The interpreter does **not** evaluate expressions inside `json { ... }`.
-* Use this style for configuration‑like responses or metadata.
+Notes:
 
-For AI‑driven endpoints, the most common pattern is to return text (`openai_chat`) or pretty‑printed JSON (`openai_chat_json`). If you need more structured output, you can use `openai_chat_json` and then post‑process the JSON in another system.
+* The runtime does not evaluate expressions inside `json { ... }`.
+* Use this style for metadata, capability descriptions, or simple constant payloads.
+
+For AI‑driven endpoints, typical patterns are:
+
+```shrimpl
+# Plain text from AI
+endpoint GET "/chat/:msg":
+  openai_chat(msg)
+
+# Pretty‑printed JSON from AI
+endpoint GET "/chat_json/:msg":
+  openai_chat_json(msg)
+```
 
 ---
 
 ## Diagnostics and Warnings
 
-Shrimpl performs static analysis to help keep programs clean and predictable. The diagnostics engine currently checks for:
+Shrimpl’s static analyzer helps keep programs clean.
 
-* **Unused path parameters**: `endpoint GET "/:id"` where `id` never appears in the body.
-* **Unused function parameters**: `func foo(x, y)` where `y` is never used.
+Current checks include:
+
+* **Unused path parameters**: `endpoint GET "/:id"` where `id` is not used.
+* **Unused function parameters**.
 * **Unused method parameters** in classes.
-* **Duplicate endpoints**: same HTTP method and path appearing more than once.
+* **Duplicate endpoints**: same method and path more than once.
+* Simple **type checking diagnostics** for functions annotated in config.
 
-Diagnostics appear in several places:
+The analyzer understands all expression variants, including:
 
-1. **Command line** via `shrimpl --file app.shr check`.
-2. **API Studio** (browser UI) under the “Diagnostics” panel.
-3. **Editors** that use the Shrimpl LSP (listed below), using standard LSP diagnostics.
+* `Expr::Bool` (boolean literals)
+* `Expr::If` (`if / elif / else` expressions)
+* `Expr::Repeat` (`repeat` loops)
 
-AI helpers are just built‑in functions, so they participate in diagnostics the same way as any other call. For example, a parameter like `:prompt` that is never passed to `openai_chat(prompt)` will be flagged as unused.
+Diagnostics appear in:
+
+1. `shrimpl --file app.shr check`
+2. `shrimpl --file app.shr diagnostics`
+3. `GET /__shrimpl/diagnostics`
+4. API Studio diagnostics panel
+5. Editors that use the Shrimpl LSP
 
 ---
 
 ## Shrimpl API Studio (Web UI)
 
-When a Shrimpl server is running, you can open the interactive API Studio:
+When a Shrimpl server is running, open:
 
 ```text
 http://localhost:<port>/__shrimpl/ui
 ```
 
-The UI provides:
+API Studio includes:
 
 * **Endpoint Explorer**
 
-  * Lists all endpoints with method, path, and body type.
+  * Lists all endpoints with method and path.
 * **Request Panel**
 
   * Fill in path parameters and query strings.
-  * Send requests and inspect responses without leaving the browser.
+  * Send requests and see responses.
 * **Response Panel**
 
-  * Shows status code, timestamp, and body.
-  * Pretty‑prints JSON responses.
+  * Shows status code and body.
+  * Pretty‑prints JSON.
 * **Source Panel**
 
-  * Displays `app.shr` with syntax highlighting.
-  * Highlighting mirrors the editor grammars (keywords, methods, strings, numbers, comments).
+  * Fetches and displays `app.shr` with syntax highlighting.
 * **Diagnostics Panel**
 
-  * Lists warnings and (future) errors.
-  * Each item includes a `kind`, `scope` (endpoint/function/method), and a human‑readable message.
+  * Shows static diagnostics (warnings, errors), including type checker results.
 
-This UI is designed for learners who benefit from immediate feedback: change code, refresh the page, and see how behavior and diagnostics change.
+Additional internal endpoints:
 
-When experimenting with AI helpers, the API Studio is a convenient way to:
+* `GET /__shrimpl/schema` → machine‑readable schema for endpoints.
+* `GET /__shrimpl/diagnostics` → diagnostics as JSON.
+* `GET /__shrimpl/source` → raw `app.shr` contents.
+* `GET /health` → simple health check returning JSON.
 
-* Try different prompts quickly.
-* Compare responses when you change the system prompt.
-* Show students how HTTP requests and AI responses relate.
+API Studio is ideal for:
+
+* Exploring endpoints.
+* Testing AI helpers with different prompts.
+* Showing the relationship between code, requests, and responses.
 
 ---
 
 ## Language Server Protocol (LSP) Support
 
-Shrimpl ships with a dedicated Language Server, **`shrimpl-lsp`**, which provides IDE‑style features for `.shr` files.
+Shrimpl ships with a Language Server, **`shrimpl-lsp`**, that provides editor features.
 
 ### Capabilities
 
-The Shrimpl LSP currently implements:
+* **Live diagnostics** (syntax, static checks, type hints).
+* **Hover information** (`server`, `endpoint`, functions, classes).
+* **Completions** (keywords like `server`, `endpoint`, `func`, `class`, `GET`, `POST`).
+* **Document symbols** (outline of endpoints, functions, classes).
 
-* **Live diagnostics**
+### Running the LSP
 
-  * Parses the open document and reports syntax errors.
-  * Runs the same static checks as the Shrimpl docs module (unused parameters, duplicate endpoints, etc.).
-* **Hover information**
-
-  * Hover over `server`, `endpoint`, function names, class names, or methods to see a short description.
-* **Completions**
-
-  * Keyword stubs such as `server`, `endpoint`, `func`, `class`, `GET`, `POST`.
-  * Can be extended with snippets and common patterns.
-* **Document symbols (outline)**
-
-  * Exposes servers, endpoints, functions, and classes as `DocumentSymbol`s.
-  * Lets editors show an outline/tree view for `.shr` files.
-
-Future versions of the LSP may provide richer hints for AI helpers (for example, showing a short description when you hover over `openai_chat`).
-
-### Running the LSP Server
-
-Build and run the LSP binary from this repo:
+Build and run:
 
 ```bash
 cargo build --bin shrimpl-lsp
-
-# or run directly
 cargo run --bin shrimpl-lsp
 ```
 
-The LSP speaks JSON‑RPC 2.0 over stdio (the standard model used by most editors).
+The server speaks JSON‑RPC 2.0 over stdio, which most editors can connect to.
 
 ### Editor Integrations
 
-In the repository, the `editors/` folder contains sample configurations:
+Sample configurations live under `editors/`:
 
 * **VS Code** (`editors/vscode/`)
-
-  * `package.json`: VS Code extension manifest (language id, activation events, LSP wiring).
-  * `extension.ts`: connects VS Code to the `shrimpl-lsp` binary and registers the language.
-  * `syntaxes/shrimpl.tmLanguage.json`: TextMate grammar mirroring the API Studio highlighting.
-  * `language-configuration.json`: comment syntax (`#`), bracket pairs, word patterns, etc.
-  * To use locally:
-
-    1. Open `editors/vscode` in VS Code.
-    2. Run `npm install`.
-    3. Use `F5` to start an “Extension Development Host” and open a folder with `.shr` files.
-
-* **Neovim** (`editors/nvim-shrimpl/shrimpl.lua`)
-
-  * Lua configuration that registers `shrimpl-lsp` with `nvim-lspconfig`.
-  * You can copy or adapt the config into your own Neovim setup.
-
+* **Neovim** (`editors/nvim-shrimpl/`)
 * **Sublime Text** (`editors/sublime/`)
+* **JetBrains** (`editors/jetbrains/`)
 
-  * Example `LSP-shrimpl.sublime-settings` for the Sublime LSP plugin.
-  * Settings point the plugin at the `shrimpl-lsp` binary and restrict it to `*.shr` files.
+Each setup wires `.shr` files to `shrimpl-lsp` and provides syntax highlighting plus diagnostics.
 
-* **JetBrains** (`editors/jetbrains/shrimpl-lsp.json`)
+---
 
-  * Sample configuration for JetBrains IDEs with LSP support, mapping `.shr` to the Shrimpl language server.
+## Logging
 
-These examples are intended as starting points; you can customize paths, commands, and additional capabilities as needed.
+Shrimpl logs each HTTP request as a JSON line on stdout, including:
+
+* Timestamp
+* Level (`"info"`)
+* Kind (`"http-request"`)
+* HTTP method
+* Path
+* Status code
+* Client address
+* Elapsed time in milliseconds
+* `auth_ok` flag indicating whether the request had valid auth claims
+
+This format makes it easy to feed logs into other tools or to demonstrate structured logging in teaching environments.
 
 ---
 
 ## Best Practices
 
-* **Use meaningful names**
-
-  * Name functions, classes, and parameters descriptively to reduce the need for comments.
-
-* **Keep functions small**
-
-  * Each `func` or method should evaluate a single expression.
-  * Break complex logic into smaller helper functions.
-
-* **Validate external input**
-
-  * When calling external APIs with `http_get`/`df_from_csv`, ensure the response format matches what your code expects.
-
-* **Handle errors gracefully**
-
-  * Consider returning error strings or JSON objects when user input is missing or invalid.
-  * For AI helpers, treat unexpected responses or error messages as an opportunity to teach debugging and resilience.
-
-* **Comment intention, not mechanics**
-
-  * Use `#` comments to explain *why* something exists, especially in tutorial code.
-
-* **Stay consistent**
-
-  * Indent with two spaces.
-  * Stick to one naming convention for endpoints and parameters.
-  * Use a consistent pattern for AI endpoints (for example, always prefix with `/ai/` or `/chat/`).
+* **Use meaningful names** for endpoints and functions.
+* **Keep functions small** and focused on a single idea.
+* **Validate external input** using JSON Schema where possible.
+* **Handle errors explicitly** in endpoint bodies (missing params, invalid values).
+* **Use comments** (`#`) to explain intention, especially in tutorial code.
+* **Stay consistent** with indentation (two spaces) and naming.
+* **Introduce AI helpers gradually** after students are comfortable with basic endpoints.
 
 ---
 
 ## Implementation Notes (High‑Level)
 
-Shrimpl’s implementation (in this repository) is roughly organized as follows:
+The repository is organized into clear layers:
 
 * **Parser (`src/parser/`)**
 
   * Tokenizes and parses `.shr` source into an abstract syntax tree (AST).
-  * The AST types live in `parser/ast.rs`.
-  * Endpoint bodies are parsed as general expressions, which means AI helpers like `openai_chat` and `openai_chat_json` are treated just like any other function call.
+  * Supports boolean literals, comparison and logical operators, `if / elif / else`, and `repeat` expressions.
 
-* **AST / Core Model (`src/ast.rs`, `src/parser/ast.rs`)**
+* **AST / Core Model (`src/parser/ast.rs`)**
 
-  * Defines core entities such as `Program`, `Endpoint`, `FunctionDef`, `ClassDef`, and `Expr`.
+  * Types for `Program`, `EndpointDecl`, `FunctionDef`, `ClassDef`, `Expr`, and more.
 
 * **Interpreter (`src/interpreter/`)**
 
   * Evaluates Shrimpl expressions.
-  * Implements HTTP server wiring and endpoint dispatch.
-  * Integrates built‑in libraries (HTTP client, vectors, tensors, dataframes, linear regression).
-  * Contains the AI helper logic: a small configuration layer that reads the OpenAI API key from the environment or from `openai_set_api_key`, and helper functions that send chat/JSON requests to the OpenAI API.
+  * Hosts the Actix‑Web HTTP server.
+  * Implements JWT auth, validation, sanitization, and logging.
+  * Integrates built‑in libraries (HTTP client, vectors, dataframes, linear regression, AI helpers).
+
+* **Config (`src/config.rs`)**
+
+  * Loads `config/config.<env>.json`.
+  * Exposes server, auth, validation, types, secrets, and values sections.
+
+* **Lockfile (`src/lockfile.rs`)**
+
+  * Computes and writes `shrimpl.lock` with version, environment, entry path, and hash.
 
 * **Docs and Diagnostics (`src/docs.rs`)**
 
-  * Builds a JSON schema for the API Studio (`/__shrimpl/schema`).
-  * Computes static diagnostics (unused params, duplicate endpoints, etc.).
+  * Builds the schema for `/__shrimpl/schema`.
+  * Computes static diagnostics, including type checker output.
+  * Embeds the HTML/JS for `/__shrimpl/ui`.
 
-* **CLI / Entry Point (`src/main.rs`)**
+* **CLI (`src/main.rs`)**
 
-  * Parses command‑line flags such as `--file`, `run`, `check`, `diagnostics`.
-  * Prints a small startup banner when running a server, including the URL of the API Studio.
-  * Invokes the interpreter or diagnostics mode accordingly.
+  * Parses command‑line arguments.
+  * Provides `run`, `check`, and `diagnostics` modes.
 
 * **Language Server (`src/bin/shrimpl_lsp.rs`)**
 
-  * Implements the LSP server using `tower-lsp`.
-  * Reuses the parser and docs diagnostics to provide:
+  * Implements LSP features on top of the parser and docs modules.
 
-    * `textDocument/publishDiagnostics`
-    * `textDocument/hover`
-    * `textDocument/completion`
-    * `textDocument/documentSymbol`
-
-* **API Studio UI (`src/docs.rs` embedded HTML)**
-
-  * Serves the `__shrimpl/ui` page.
-  * Fetches schema, diagnostics, and source from HTTP endpoints exposed by the interpreter.
-  * Renders interactive panels in the browser using vanilla HTML/CSS/JS.
-
-This architecture keeps the **language core** (parser + interpreter + docs) separate from **presentation layers** (CLI, LSP, API Studio, editor plugins). The AI helpers live in the interpreter layer and are exposed to programs as simple built‑in functions, so teachers and students can use them without needing to know anything about HTTP clients, JSON payloads, or authentication headers.
+This separation keeps language design and teaching concerns clear while allowing the runtime to grow with features like JWT auth, validation, types, and AI integration.
 
 ---
 
 ## Conclusion
 
-Shrimpl 0.5 combines the simplicity of visual programming with the power of modern languages. It offers a gentle introduction to:
+Shrimpl 0.5.x combines the simplicity of a teaching language with practical features drawn from real‑world API development:
 
-* Server‑side programming and HTTP APIs
-* Data manipulation using dataframes and vectors
+* Server‑side programming and HTTP endpoints
+* Control‑flow with expressions (`if`, `elif`, `else`, `repeat`)
+* Data manipulation with vectors and dataframes
 * Basic machine learning with linear regression
-* AI‑assisted programming using OpenAI helpers for chat‑style responses and JSON payloads
+* Optional AI‑assisted endpoints with OpenAI helpers
+* Optional JWT auth, JSON Schema validation, and static type checking
 
-The interpreter, diagnostics engine, API Studio, and LSP work together to create a friendly learning environment. Learners can:
-
-1. Write simple `.shr` files.
-2. See immediate results in the browser.
-3. Get real‑time feedback from their editor.
-4. Grow into more advanced topics (dataframes, ML, external APIs, AI helpers) without leaving Shrimpl.
-
-For further examples and community discussion, visit the project repository, share your own Shrimpl programs, and help shape future versions of the language.
+Learners can start with a few lines of code, see immediate results in the browser, and progressively discover more advanced ideas without leaving the language.

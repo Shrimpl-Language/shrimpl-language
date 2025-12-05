@@ -117,7 +117,7 @@ pub fn chat(user_message: &str) -> Result<String, OpenAIError> {
     let client = Client::new();
 
     let body = json!({
-        "model": "gpt-4o-mini",
+        "model": "gpt-5.1",
         "messages": build_messages(user_message),
     });
 
