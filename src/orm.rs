@@ -190,10 +190,7 @@ impl Orm {
             .query(params![id_value])
             .map_err(|e| format!("find query failed: {e}"))?;
 
-        if let Some(row) = rows
-            .next()
-            .map_err(|e| format!("find next failed: {e}"))?
-        {
+        if let Some(row) = rows.next().map_err(|e| format!("find next failed: {e}"))? {
             let mut obj = JsonMap::new();
             for field in &model.fields {
                 let val: rusqlite::types::Value = row
@@ -248,9 +245,7 @@ pub fn init_global_orm(program: &Program) -> rusqlite::Result<()> {
     let models = program.models.clone();
     let orm = Orm::new(conn, models)?;
 
-    let mut guard = GLOBAL_ORM
-        .lock()
-        .expect("GLOBAL_ORM poisoned");
+    let mut guard = GLOBAL_ORM.lock().expect("GLOBAL_ORM poisoned");
     *guard = Some(orm);
 
     Ok(())

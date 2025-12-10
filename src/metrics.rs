@@ -28,8 +28,7 @@ pub fn init_from_env() {
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
 
-        let filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info"));
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
         if enable_otel {
             // If you add opentelemetry crates, you can wire them here
@@ -47,7 +46,10 @@ pub fn init_from_env() {
                 .init();
         }
 
-        info!("[shrimpl-metrics] tracing initialized (otel={})", enable_otel);
+        info!(
+            "[shrimpl-metrics] tracing initialized (otel={})",
+            enable_otel
+        );
     });
 }
 

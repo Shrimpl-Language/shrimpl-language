@@ -15,7 +15,7 @@ pub mod lint;
 pub mod loader;
 pub mod lockfile;
 pub mod metrics;
-pub mod orm;        // <-- NEW: make `crate::orm` available to interpreter/eval
+pub mod orm; // <-- NEW: make `crate::orm` available to interpreter/eval
 pub mod parser;
 pub mod tests;
 pub mod typecheck;

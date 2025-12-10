@@ -7,8 +7,8 @@ mod config;
 mod docs;
 mod interpreter;
 mod lockfile;
-mod parser;
 mod orm;
+mod parser;
 
 use config as shrimpl_config;
 use interpreter::http::run as run_server;

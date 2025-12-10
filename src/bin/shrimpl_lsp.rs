@@ -437,8 +437,7 @@ fn keyword_completions() -> Vec<CompletionItem> {
             kind: Some(CompletionItemKind::KEYWORD),
             detail: Some("Define ORM model: model Name: fields".to_string()),
             insert_text: Some(
-                "model ${1:User}:\n  id: int pk\n  name: string\n  created_at?: string"
-                    .to_string(),
+                "model ${1:User}:\n  id: int pk\n  name: string\n  created_at?: string".to_string(),
             ),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
             ..CompletionItem::default()

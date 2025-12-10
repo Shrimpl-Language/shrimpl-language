@@ -267,7 +267,12 @@ fn parse_rate_limit_line(line: &str, line_no: usize) -> Result<RateLimit, String
     //   @rate_limit 5 60
     let rest = line
         .strip_prefix("@rate_limit")
-        .ok_or_else(|| format!("Line {}: rate-limit line must start with '@rate_limit'", line_no))?
+        .ok_or_else(|| {
+            format!(
+                "Line {}: rate-limit line must start with '@rate_limit'",
+                line_no
+            )
+        })?
         .trim_start();
 
     let (max_str, window_str) = if rest.starts_with('(') {
@@ -632,7 +637,10 @@ fn parse_model_field(line: &str, line_no: usize) -> Result<ModelField, String> {
 
     let raw_name = line[..colon_pos].trim();
     if raw_name.is_empty() {
-        return Err(format!("Line {}: model field name cannot be empty", line_no));
+        return Err(format!(
+            "Line {}: model field name cannot be empty",
+            line_no
+        ));
     }
 
     let (name, is_optional) = if let Some(stripped) = raw_name.strip_suffix('?') {
@@ -752,13 +760,7 @@ fn parse_test(lines: &[&str], start: usize) -> Result<(TestCase, usize), String>
         ));
     }
 
-    Ok((
-        TestCase {
-            name,
-            assertions,
-        },
-        i,
-    ))
+    Ok((TestCase { name, assertions }, i))
 }
 
 // ---------- helpers ----------

@@ -28,11 +28,7 @@ static GLOBAL_CACHE: Lazy<Mutex<HashMap<String, CacheEntry>>> =
 
 /// Set a cache key to a JSON value with optional TTL in seconds.
 /// ttl_secs == None => no expiration.
-pub async fn cache_set(
-    key: String,
-    value: JsonValue,
-    ttl_secs: Option<u64>,
-) {
+pub async fn cache_set(key: String, value: JsonValue, ttl_secs: Option<u64>) {
     let expires_at = ttl_secs.map(|s| Instant::now() + Duration::from_secs(s));
     let entry = CacheEntry { value, expires_at };
 
