@@ -102,8 +102,10 @@ pub enum Expr {
     ///
     ///   repeat N times: body_expr
     ///
-    /// Evaluates `count` once, coerces to integer N (floor),
-    /// executes `body` N times, returns the last value (or "" if N == 0).
+    /// Evaluates `count` once, coerces to integer N (floor), and executes
+    /// `body` N times. String results are concatenated so repeat can build
+    /// beginner-friendly text output without mutation. Non-string results
+    /// return the last value (or "" if N == 0).
     Repeat {
         count: Box<Expr>,
         body: Box<Expr>,

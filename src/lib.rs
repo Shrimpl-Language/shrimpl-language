@@ -4,6 +4,7 @@
 // Exposes the core compiler / interpreter modules so the CLI binary,
 // LSP, and any other tools can share the same implementation.
 
+pub mod analysis;
 pub mod ast;
 pub mod cache;
 pub mod concurrency;

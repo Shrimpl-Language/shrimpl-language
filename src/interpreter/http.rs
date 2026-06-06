@@ -10,10 +10,11 @@
 // - Built-in JWT auth based on config.auth.*
 // - Input validation + sanitization via config.validation.schemas (JSON Schema).
 // - Structured JSON logging per HTTP request.
+// - Optional per-endpoint rate limiting via EndpointDecl.rate_limit.
 
 use crate::config;
 use crate::docs;
-use crate::parser::ast::{Body, EndpointDecl, Method, Program};
+use crate::parser::ast::{Body, EndpointDecl, Method, Program, RateLimit};
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use chrono::Utc;
 use jsonschema::{Draft, JSONSchema};
@@ -23,12 +24,13 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::time::Instant;
+use std::io::BufReader;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::ServerConfig as TlsServerConfig;
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use std::io::BufReader;
 
 use super::eval;
 
@@ -41,6 +43,47 @@ struct JwtClaims {
     pub role: Option<String>,
     #[allow(dead_code)]
     pub exp: Option<u64>,
+}
+
+// --- Rate limiting state ---
+
+#[derive(Debug, Clone)]
+struct RateLimiter {
+    inner: Arc<Mutex<HashMap<(String, String), Vec<Instant>>>>,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl RateLimiter {
+    /// Returns true if the request is allowed, false if rate-limited.
+    fn check(&self, path: &str, client: &str, spec: &RateLimit, now: Instant) -> bool {
+        let key = (path.to_string(), client.to_string());
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        let entry = guard.entry(key).or_insert_with(Vec::new);
+        let window = Duration::from_secs(u64::from(spec.window_secs));
+
+        // Drop timestamps outside of window
+        let cutoff = now - window;
+        entry.retain(|t| *t >= cutoff);
+
+        if entry.len() as u32 >= spec.max_requests {
+            // Already at or over limit.
+            return false;
+        }
+
+        entry.push(now);
+        true
+    }
 }
 
 // --- helpers: auth, validation, logging ---
@@ -203,6 +246,7 @@ fn log_request(
     client: &str,
     elapsed_ms: u128,
     auth_ok: bool,
+    rate_limited: bool,
 ) {
     let payload = serde_json::json!({
         "ts": Utc::now().to_rfc3339(),
@@ -213,7 +257,8 @@ fn log_request(
         "status": status,
         "client": client,
         "elapsed_ms": elapsed_ms,
-        "auth_ok": auth_ok
+        "auth_ok": auth_ok,
+        "rate_limited": rate_limited
     });
     println!("{}", payload);
 }
@@ -225,9 +270,12 @@ pub async fn run(program: Program) -> std::io::Result<()> {
 
     // Clone once for moving into the Actix factory closure
     let program_for_server = program.clone();
+    let rate_limiter = RateLimiter::default();
 
     let factory = move || {
-        let mut app = App::new();
+        let rate_limiter_data = web::Data::new(rate_limiter.clone());
+
+        let mut app = App::new().app_data(rate_limiter_data.clone());
         let program_cloned = program_for_server.clone();
 
         // Built-in health check endpoint
@@ -251,147 +299,240 @@ pub async fn run(program: Program) -> std::io::Result<()> {
                 Method::Get => {
                     app = app.route(
                         &actix_path,
-                        web::get().to(move |req: HttpRequest| {
-                            let ep_here = endpoint_clone.clone();
-                            let program_here = program_for_route.clone();
-                            async move {
-                                let started = Instant::now();
-                                let path = ep_here.path.clone();
-                                let method = "GET";
-                                let client = req
-                                    .connection_info()
-                                    .realip_remote_addr()
-                                    .unwrap_or("unknown")
-                                    .to_string();
+                        web::get().to(
+                            move |req: HttpRequest, limiter: web::Data<RateLimiter>| {
+                                let ep_here = endpoint_clone.clone();
+                                let program_here = program_for_route.clone();
+                                async move {
+                                    let started = Instant::now();
+                                    let path = ep_here.path.clone();
+                                    let method = "GET";
+                                    let client = req
+                                        .connection_info()
+                                        .realip_remote_addr()
+                                        .unwrap_or("unknown")
+                                        .to_string();
 
-                                let jwt_result = verify_jwt_if_required(&path, &req);
-                                let claims_opt = match jwt_result {
-                                    Ok(c) => c,
-                                    Err(resp) => {
-                                        log_request(
+                                    let jwt_result = verify_jwt_if_required(&path, &req);
+                                    let claims_opt = match jwt_result {
+                                        Ok(c) => c,
+                                        Err(resp) => {
+                                            log_request(
+                                                &path,
+                                                method,
+                                                resp.status().as_u16(),
+                                                &client,
+                                                started.elapsed().as_millis(),
+                                                false,
+                                                false,
+                                            );
+                                            return resp;
+                                        }
+                                    };
+
+                                    // Rate limiting (if configured).
+                                    if let Some(spec) = &ep_here.rate_limit {
+                                        let allowed = limiter.check(
                                             &path,
-                                            method,
-                                            resp.status().as_u16(),
                                             &client,
-                                            started.elapsed().as_millis(),
-                                            false,
+                                            spec,
+                                            Instant::now(),
                                         );
-                                        return resp;
+                                        if !allowed {
+                                            let resp = HttpResponse::TooManyRequests()
+                                                .content_type(
+                                                    "application/json; charset=utf-8",
+                                                )
+                                                .body(
+                                                    r#"{"error":"rate_limited","detail":"too many requests"}"#,
+                                                );
+                                            log_request(
+                                                &path,
+                                                method,
+                                                resp.status().as_u16(),
+                                                &client,
+                                                started.elapsed().as_millis(),
+                                                claims_opt.is_some(),
+                                                true,
+                                            );
+                                            return resp;
+                                        }
                                     }
-                                };
 
-                                // Collect vars from path + query
-                                let mut vars = collect_all_vars(&req);
+                                    // Collect vars from path + query
+                                    let mut vars = collect_all_vars(&req);
 
-                                // Inject claims when present
-                                if let Some(claims) = claims_opt.as_ref() {
-                                    if let Some(sub) = &claims.sub {
-                                        vars.insert("jwt_sub".to_string(), sub.clone());
+                                    // Always inject default JWT-related vars so app.shr
+                                    // can safely reference jwt_sub/jwt_scope/jwt_role
+                                    vars.entry("jwt_sub".to_string())
+                                        .or_insert_with(String::new);
+                                    vars.entry("jwt_scope".to_string())
+                                        .or_insert_with(String::new);
+                                    vars.entry("jwt_role".to_string())
+                                        .or_insert_with(String::new);
+
+                                    // Override with claims when present
+                                    if let Some(claims) = claims_opt.as_ref() {
+                                        if let Some(sub) = &claims.sub {
+                                            vars.insert("jwt_sub".to_string(), sub.clone());
+                                        }
+                                        if let Some(scope) = &claims.scope {
+                                            vars.insert(
+                                                "jwt_scope".to_string(),
+                                                scope.clone(),
+                                            );
+                                        }
+                                        if let Some(role) = &claims.role {
+                                            vars.insert("jwt_role".to_string(), role.clone());
+                                        }
                                     }
-                                    if let Some(scope) = &claims.scope {
-                                        vars.insert("jwt_scope".to_string(), scope.clone());
-                                    }
-                                    if let Some(role) = &claims.role {
-                                        vars.insert("jwt_role".to_string(), role.clone());
-                                    }
+
+                                    let resp = respond(ep_here, program_here, vars);
+                                    let status = resp.status().as_u16();
+                                    log_request(
+                                        &path,
+                                        method,
+                                        status,
+                                        &client,
+                                        started.elapsed().as_millis(),
+                                        claims_opt.is_some(),
+                                        false,
+                                    );
+                                    resp
                                 }
-
-                                let resp = respond(ep_here, program_here, vars);
-                                let status = resp.status().as_u16();
-                                log_request(
-                                    &path,
-                                    method,
-                                    status,
-                                    &client,
-                                    started.elapsed().as_millis(),
-                                    claims_opt.is_some(),
-                                );
-                                resp
-                            }
-                        }),
+                            },
+                        ),
                     );
                 }
                 Method::Post => {
                     app = app.route(
                         &actix_path,
-                        web::post().to(move |req: HttpRequest, body: web::Bytes| {
-                            let ep_here = endpoint_clone.clone();
-                            let program_here = program_for_route.clone();
-                            async move {
-                                let started = Instant::now();
-                                let path = ep_here.path.clone();
-                                let method = "POST";
-                                let client = req
-                                    .connection_info()
-                                    .realip_remote_addr()
-                                    .unwrap_or("unknown")
-                                    .to_string();
+                        web::post().to(
+                            move |req: HttpRequest,
+                                  body: web::Bytes,
+                                  limiter: web::Data<RateLimiter>| {
+                                let ep_here = endpoint_clone.clone();
+                                let program_here = program_for_route.clone();
+                                async move {
+                                    let started = Instant::now();
+                                    let path = ep_here.path.clone();
+                                    let method = "POST";
+                                    let client = req
+                                        .connection_info()
+                                        .realip_remote_addr()
+                                        .unwrap_or("unknown")
+                                        .to_string();
 
-                                let jwt_result = verify_jwt_if_required(&path, &req);
-                                let claims_opt = match jwt_result {
-                                    Ok(c) => c,
-                                    Err(resp) => {
-                                        log_request(
+                                    let jwt_result = verify_jwt_if_required(&path, &req);
+                                    let claims_opt = match jwt_result {
+                                        Ok(c) => c,
+                                        Err(resp) => {
+                                            log_request(
+                                                &path,
+                                                method,
+                                                resp.status().as_u16(),
+                                                &client,
+                                                started.elapsed().as_millis(),
+                                                false,
+                                                false,
+                                            );
+                                            return resp;
+                                        }
+                                    };
+
+                                    // Rate limiting (if configured).
+                                    if let Some(spec) = &ep_here.rate_limit {
+                                        let allowed = limiter.check(
                                             &path,
-                                            method,
-                                            resp.status().as_u16(),
                                             &client,
-                                            started.elapsed().as_millis(),
-                                            false,
+                                            spec,
+                                            Instant::now(),
                                         );
-                                        return resp;
+                                        if !allowed {
+                                            let resp = HttpResponse::TooManyRequests()
+                                                .content_type(
+                                                    "application/json; charset=utf-8",
+                                                )
+                                                .body(
+                                                    r#"{"error":"rate_limited","detail":"too many requests"}"#,
+                                                );
+                                            log_request(
+                                                &path,
+                                                method,
+                                                resp.status().as_u16(),
+                                                &client,
+                                                started.elapsed().as_millis(),
+                                                claims_opt.is_some(),
+                                                true,
+                                            );
+                                            return resp;
+                                        }
                                     }
-                                };
 
-                                // Validate + sanitize JSON body (if schema exists)
-                                let body_text_res = validate_and_sanitize_body(&path, body).await;
-                                let body_text = match body_text_res {
-                                    Ok(t) => t,
-                                    Err(resp) => {
-                                        log_request(
-                                            &path,
-                                            method,
-                                            resp.status().as_u16(),
-                                            &client,
-                                            started.elapsed().as_millis(),
-                                            claims_opt.is_some(),
-                                        );
-                                        return resp;
-                                    }
-                                };
+                                    // Validate + sanitize JSON body (if schema exists)
+                                    let body_text_res =
+                                        validate_and_sanitize_body(&path, body).await;
+                                    let body_text = match body_text_res {
+                                        Ok(t) => t,
+                                        Err(resp) => {
+                                            log_request(
+                                                &path,
+                                                method,
+                                                resp.status().as_u16(),
+                                                &client,
+                                                started.elapsed().as_millis(),
+                                                claims_opt.is_some(),
+                                                false,
+                                            );
+                                            return resp;
+                                        }
+                                    };
 
-                                // Collect vars from path + query
-                                let mut vars = collect_all_vars(&req);
+                                    // Collect vars from path + query
+                                    let mut vars = collect_all_vars(&req);
 
-                                // Insert request body under "body" for Shrimpl code
-                                vars.insert("body".to_string(), body_text);
+                                    // Insert request body under "body" for Shrimpl code
+                                    vars.insert("body".to_string(), body_text);
 
-                                // Inject claims when present
-                                if let Some(claims) = claims_opt.as_ref() {
-                                    if let Some(sub) = &claims.sub {
-                                        vars.insert("jwt_sub".to_string(), sub.clone());
+                                    // Always inject default JWT-related vars
+                                    vars.entry("jwt_sub".to_string())
+                                        .or_insert_with(String::new);
+                                    vars.entry("jwt_scope".to_string())
+                                        .or_insert_with(String::new);
+                                    vars.entry("jwt_role".to_string())
+                                        .or_insert_with(String::new);
+
+                                    // Override with claims when present
+                                    if let Some(claims) = claims_opt.as_ref() {
+                                        if let Some(sub) = &claims.sub {
+                                            vars.insert("jwt_sub".to_string(), sub.clone());
+                                        }
+                                        if let Some(scope) = &claims.scope {
+                                            vars.insert(
+                                                "jwt_scope".to_string(),
+                                                scope.clone(),
+                                            );
+                                        }
+                                        if let Some(role) = &claims.role {
+                                            vars.insert("jwt_role".to_string(), role.clone());
+                                        }
                                     }
-                                    if let Some(scope) = &claims.scope {
-                                        vars.insert("jwt_scope".to_string(), scope.clone());
-                                    }
-                                    if let Some(role) = &claims.role {
-                                        vars.insert("jwt_role".to_string(), role.clone());
-                                    }
+
+                                    let resp = respond(ep_here, program_here, vars);
+                                    let status = resp.status().as_u16();
+                                    log_request(
+                                        &path,
+                                        method,
+                                        status,
+                                        &client,
+                                        started.elapsed().as_millis(),
+                                        claims_opt.is_some(),
+                                        false,
+                                    );
+                                    resp
                                 }
-
-                                let resp = respond(ep_here, program_here, vars);
-                                let status = resp.status().as_u16();
-                                log_request(
-                                    &path,
-                                    method,
-                                    status,
-                                    &client,
-                                    started.elapsed().as_millis(),
-                                    claims_opt.is_some(),
-                                );
-                                resp
-                            }
-                        }),
+                            },
+                        ),
                     );
                 }
             }
@@ -472,9 +613,6 @@ fn load_tls_config() -> std::io::Result<TlsServerConfig> {
     let mut cert_reader = BufReader::new(cert_file);
     let mut key_reader = BufReader::new(key_file);
 
-    // rustls-pemfile 2.x APIs:
-    // - certs() -> impl Iterator<Item = Result<CertificateDer<'static>, _>>
-    // - pkcs8_private_keys() -> impl Iterator<Item = Result<PrivatePkcs8KeyDer<'static>, _>>
     let certs: Vec<CertificateDer<'static>> = certs(&mut cert_reader)
         .collect::<Result<_, _>>()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -488,7 +626,6 @@ fn load_tls_config() -> std::io::Result<TlsServerConfig> {
         .next()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "no private keys"))?;
 
-    // Convert PrivatePkcs8KeyDer -> PrivateKeyDer for rustls 0.23
     let key: PrivateKeyDer<'static> = pkcs8_key.into();
 
     let cfg = TlsServerConfig::builder()

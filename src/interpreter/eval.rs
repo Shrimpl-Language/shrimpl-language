@@ -331,10 +331,21 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> EvalResult<ValueRunti
             }
 
             let mut last = ValueRuntime::Str(String::new());
+            let mut text_output = String::new();
+            let mut all_strings = true;
             for _ in 0..steps {
                 last = eval_expr(body, program, env)?;
+                match &last {
+                    ValueRuntime::Str(s) => text_output.push_str(s),
+                    _ => all_strings = false,
+                }
             }
-            Ok(last)
+
+            if all_strings {
+                Ok(ValueRuntime::Str(text_output))
+            } else {
+                Ok(last)
+            }
         }
 
         Expr::Try {
@@ -1240,4 +1251,29 @@ fn parse_df(text: &str) -> EvalResult<DataFrame> {
     let rows: Vec<Value> = rows_arr.to_vec();
 
     Ok(DataFrame { columns, rows })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::ast::Body;
+    use crate::parser::parse_program;
+
+    #[test]
+    fn repeat_concatenates_string_results() {
+        let source = r#"server 3000
+func repeat_greet(name, n): repeat number(n) times: "Hello " + name + "! "
+endpoint GET "/": repeat_greet("Ana", 2)
+"#;
+        let program = parse_program(source).expect("program should parse");
+        let endpoint = program.endpoints.first().expect("endpoint should exist");
+
+        let Body::TextExpr(expr) = &endpoint.body else {
+            panic!("expected text expression body");
+        };
+
+        let vars = HashMap::new();
+        let result = eval_body_expr(expr, &program, &vars).expect("expression should evaluate");
+        assert_eq!(result, "Hello Ana! Hello Ana! ");
+    }
 }

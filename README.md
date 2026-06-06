@@ -171,6 +171,15 @@ Diagnostics are visible both in the terminal, in `__shrimpl/diagnostics`, and in
 
    This is the same data shown in the API Studio diagnostics panel.
 
+7. To run embedded Shrimpl test blocks, use:
+
+   ```bash
+   shrimpl --file app.shr test
+   ```
+
+   Tests are ordinary Shrimpl expressions under `test "name":` blocks. A test fails if any
+   `assert` expression evaluates to anything other than `true`.
+
 ---
 
 ## Project Files and Environments
@@ -559,7 +568,7 @@ Example:
 ```shrimpl
 func repeat_greet(name, n):
   repeat number(n) times:
-    "Hello " + name  # result of last iteration is returned
+    "Hello " + name + "! "
 
 endpoint GET "/repeat-greet":
   repeat_greet(name, n)
@@ -568,9 +577,10 @@ endpoint GET "/repeat-greet":
 Behavior:
 
 * `N` is evaluated once and converted to a number.
-* Negative values are treated as zero.
+* Negative values are rejected.
 * There is a hard safety cap (for example 10,000 iterations) to avoid runaway loops.
-* The result is the value of the **last** iteration, or `""` if `N == 0`.
+* If every iteration returns a string, the strings are concatenated.
+* For non-string results, the expression returns the value of the last iteration, or `""` if `N == 0`.
 
 ---
 
@@ -1296,9 +1306,17 @@ Diagnostics are reported as JSON objects with fields like:
 ```json
 {
   "kind": "error",
+  "source": "shrimpl-analysis",
+  "code": "typecheck",
   "scope": "function",
   "name": "add",
-  "message": "Return type mismatch: expected number, got string"
+  "message": "Return type mismatch: expected number, got string",
+  "line": 12,
+  "column": 6,
+  "range": {
+    "start": { "line": 11, "character": 5 },
+    "end": { "line": 11, "character": 8 }
+  }
 }
 ```
 
@@ -1353,6 +1371,9 @@ Current checks include:
 * **Unused function parameters**.
 * **Unused method parameters** in classes.
 * **Duplicate endpoints**: same method and path more than once.
+* **Undefined function/class/method calls** before runtime.
+* **Function and method arity mismatches**.
+* **Built-in function arity mismatches**.
 * Simple **type checking diagnostics** for functions annotated in config.
 
 The analyzer understands all expression variants, including:
@@ -1365,9 +1386,14 @@ Diagnostics appear in:
 
 1. `shrimpl --file app.shr check`
 2. `shrimpl --file app.shr diagnostics`
-3. `GET /__shrimpl/diagnostics`
-4. API Studio diagnostics panel
-5. Editors that use the Shrimpl LSP
+3. `shrimpl --file app.shr lint`
+4. `GET /__shrimpl/diagnostics`
+5. API Studio diagnostics panel
+6. Editors that use the Shrimpl LSP
+
+The CLI and LSP share the same analyzer. This is intentional: editor warnings,
+terminal checks, and API Studio diagnostics should not drift into separate
+interpretations of the language.
 
 ---
 
@@ -1624,6 +1650,19 @@ The repository is organized into clear layers:
   * Supports boolean literals, comparison and logical operators, `if / elif / else`, and `repeat` expressions.
   * Parses `model` declarations into `ModelDef` structures used by the ORM.
 
+* **Loader (`src/loader.rs`)**
+
+  * Resolves `import "relative/file.shr"` from the importing file.
+  * Inlines imported files before parsing.
+  * De-duplicates canonical paths so import cycles do not recurse forever.
+
+* **Analyzer (`src/analysis.rs`)**
+
+  * Runs static semantic checks over the AST.
+  * Attaches source ranges for CLI JSON, API Studio, and LSP diagnostics.
+  * Detects duplicate endpoints, unused parameters, undefined calls, arity mismatches, and type checker output.
+  * Acts as the shared source of truth for diagnostics so editor and CLI behavior stay aligned.
+
 * **AST / Core Model (`src/parser/ast.rs`)**
 
   * Types for `Program`, `EndpointDecl`, `FunctionDef`, `ClassDef`, `ModelDef`, `Expr`, and more.
@@ -1657,18 +1696,21 @@ The repository is organized into clear layers:
 * **Docs and Diagnostics (`src/docs.rs`)**
 
   * Builds the schema for `/__shrimpl/schema`.
-  * Computes static diagnostics, including type checker output.
+  * Exposes analyzer diagnostics, including type checker output.
   * Embeds the HTML/JS for `/__shrimpl/ui`.
 
 * **CLI (`src/main.rs`)**
 
   * Parses command‑line arguments.
-  * Provides `run`, `check`, and `diagnostics` modes.
+  * Provides `run`, `check`, `diagnostics`, `lint`, `test`, and `format` modes.
+  * Loads imports before parsing.
+  * Runs analyzer checks before serving or testing.
   * Initializes config, applies server overrides, and calls `init_global_orm` before starting the HTTP server.
 
 * **Language Server (`src/bin/shrimpl_lsp.rs`)**
 
-  * Implements LSP features on top of the parser and docs modules.
+  * Implements LSP features on top of the parser and analyzer modules.
+  * Publishes precise diagnostics with source ranges instead of file-level warnings.
   * Powers all editor integrations, including the bundled VS Code extension binaries.
 
 This separation keeps language design and teaching concerns clear while allowing the runtime to grow with features like JWT auth, validation, types, AI integration, and now a minimal but useful persistence layer.

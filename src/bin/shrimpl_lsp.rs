@@ -1,13 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::Value;
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use shrimpl::docs;
+use shrimpl::analysis::{self, AnalysisDiagnostic};
 use shrimpl::parser::ast::Program;
 use shrimpl::parser::parse_program;
 
@@ -35,12 +34,7 @@ impl Backend {
     }
 
     async fn reanalyze(&self, uri: Url, text: String) {
-        let (mut diagnostics, program_opt) = analyze_source(text);
-
-        if let Some(program) = program_opt {
-            let diags_json: Value = docs::build_diagnostics(&program);
-            diagnostics.extend(convert_static_diagnostics(&diags_json));
-        }
+        let (diagnostics, _program_opt) = analyze_source(text);
 
         let _ = self
             .client
@@ -52,25 +46,28 @@ impl Backend {
 /// Analyze Shrimpl source into (LSP diagnostics, optional Program).
 fn analyze_source(source: String) -> (Vec<Diagnostic>, Option<Program>) {
     match parse_program(&source) {
-        Ok(program) => (Vec::new(), Some(program)),
+        Ok(program) => {
+            let diagnostics = analysis::analyze_program(&program, &source)
+                .iter()
+                .map(to_lsp_diagnostic)
+                .collect();
+            (diagnostics, Some(program))
+        }
         Err(msg) => {
-            let mut line: u32 = 0;
-            if let Some(idx) = msg.find("Line ") {
-                let rest = &msg[idx + 5..];
-                if let Some(colon) = rest.find(':') {
-                    let num_str = rest[..colon].trim();
-                    if let Ok(num) = num_str.parse::<u32>() {
-                        line = num.saturating_sub(1);
-                    }
-                }
-            }
+            let line = parse_error_line(&msg).unwrap_or(0);
+            let end_character = source
+                .lines()
+                .nth(line as usize)
+                .map(|line_text| line_text.encode_utf16().count() as u32)
+                .unwrap_or(1)
+                .max(1);
 
             let diagnostic = Diagnostic {
                 range: Range {
                     start: Position { line, character: 0 },
                     end: Position {
                         line,
-                        character: 200,
+                        character: end_character,
                     },
                 },
                 severity: Some(DiagnosticSeverity::ERROR),
@@ -88,64 +85,54 @@ fn analyze_source(source: String) -> (Vec<Diagnostic>, Option<Program>) {
     }
 }
 
-/// Convert JSON diagnostics from docs::build_diagnostics into LSP diagnostics.
-fn convert_static_diagnostics(json: &Value) -> Vec<Diagnostic> {
-    let mut out = Vec::new();
+fn parse_error_line(message: &str) -> Option<u32> {
+    let idx = message.find("Line ")?;
+    let rest = &message[idx + 5..];
+    let colon = rest.find(':')?;
+    let num = rest[..colon].trim().parse::<u32>().ok()?;
+    Some(num.saturating_sub(1))
+}
 
-    let errors = json
-        .get("errors")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let warnings = json
-        .get("warnings")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    for item in errors.into_iter().chain(warnings.into_iter()) {
-        let message = item
-            .get("message")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Shrimpl diagnostic")
-            .to_string();
-
-        let severity = if item
-            .get("kind")
-            .and_then(|v| v.as_str())
-            .unwrap_or("warning")
-            .eq_ignore_ascii_case("error")
-        {
-            DiagnosticSeverity::ERROR
-        } else {
-            DiagnosticSeverity::WARNING
-        };
-
-        let diagnostic = Diagnostic {
-            range: Range {
-                start: Position {
-                    line: 0,
-                    character: 0,
-                },
-                end: Position {
-                    line: 0,
-                    character: 1,
-                },
+fn to_lsp_diagnostic(diagnostic: &AnalysisDiagnostic) -> Diagnostic {
+    let range = diagnostic
+        .span
+        .map(|span| Range {
+            start: Position {
+                line: span.line,
+                character: span.character,
             },
-            severity: Some(severity),
-            code: None,
-            code_description: None,
-            source: Some("shrimpl-diag".to_string()),
-            message,
-            related_information: None,
-            tags: None,
-            data: None,
-        };
+            end: Position {
+                line: span.end_line,
+                character: span.end_character,
+            },
+        })
+        .unwrap_or(Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 1,
+            },
+        });
 
-        out.push(diagnostic);
+    let severity = match diagnostic.severity {
+        analysis::DiagnosticSeverity::Error => DiagnosticSeverity::ERROR,
+        analysis::DiagnosticSeverity::Warning => DiagnosticSeverity::WARNING,
+    };
+
+    Diagnostic {
+        range,
+        severity: Some(severity),
+        code: Some(NumberOrString::String(diagnostic.code.clone())),
+        code_description: None,
+        source: Some(diagnostic.source.clone()),
+        message: diagnostic.message.clone(),
+        related_information: None,
+        tags: None,
+        data: None,
     }
-
-    out
 }
 
 #[derive(Debug, Clone)]
@@ -466,6 +453,86 @@ fn keyword_completions() -> Vec<CompletionItem> {
             insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
             ..CompletionItem::default()
         },
+        CompletionItem {
+            label: "@rate_limit".to_string(),
+            kind: Some(CompletionItemKind::PROPERTY),
+            detail: Some("Limit endpoint requests per client".to_string()),
+            insert_text: Some("@rate_limit(${1:60}, ${2:60})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "secret".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("Map a logical secret to an environment variable".to_string()),
+            insert_text: Some("secret ${1:OPENAI} = \"${2:SHRIMPL_OPENAI_API_KEY}\"".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "test".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("Define an embedded Shrimpl test block".to_string()),
+            insert_text: Some("test \"${1:name}\":\n  assert ${2:expr}".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "if".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("Conditional expression".to_string()),
+            insert_text: Some("if ${1:condition}: ${2:value} else: ${3:other}".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "repeat".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("Bounded repeat expression".to_string()),
+            insert_text: Some("repeat ${1:n} times: ${2:expr}".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "try".to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("Recover from expression evaluation errors".to_string()),
+            insert_text: Some("try: ${1:expr} catch ${2:err}: ${3:fallback}".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "orm_insert".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Insert a JSON object into a model table".to_string()),
+            insert_text: Some("orm_insert(\"${1:Model}\", ${2:record_json})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "orm_find_by_id".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Find a model row by primary key".to_string()),
+            insert_text: Some("orm_find_by_id(\"${1:Model}\", ${2:id_json})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "openai_chat".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Call the configured OpenAI chat model".to_string()),
+            insert_text: Some("openai_chat(${1:prompt})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "http_get_json".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Fetch and pretty-print JSON from a URL".to_string()),
+            insert_text: Some("http_get_json(${1:url})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
     ]
 }
 
@@ -586,6 +653,8 @@ impl LanguageServer for Backend {
                     "/".to_string(),
                     "\"".to_string(),
                     ":".to_string(),
+                    "@".to_string(),
+                    ".".to_string(),
                 ]),
                 ..CompletionOptions::default()
             }),
@@ -753,6 +822,29 @@ impl LanguageServer for Backend {
         } else if word == "model" {
             Some(
                 "Shrimpl ORM model definition.\n\nSyntax:\n```shrimpl\nmodel User:\n  id: int pk\n  name: string\n  age?: int\n```"
+                    .to_string(),
+            )
+        } else if word == "secret" {
+            Some(
+                "Shrimpl secret mapping.\n\nSyntax: `secret NAME = \"ENV_VAR\"`.\n\nUse `secret(\"NAME\")` at runtime to read the mapped environment variable."
+                    .to_string(),
+            )
+        } else if word == "test" || word == "assert" {
+            Some(
+                "Shrimpl embedded test block.\n\nSyntax:\n```shrimpl\ntest \"name\":\n  assert expr\n```\n\nRun with `shrimpl --file app.shr test`."
+                    .to_string(),
+            )
+        } else if matches!(
+            word.as_str(),
+            "if" | "elif" | "else" | "repeat" | "try" | "catch" | "finally"
+        ) {
+            Some(format!(
+                "Shrimpl `{}` expression keyword.\n\nControl-flow expressions evaluate to values and can be returned directly from endpoints or functions.",
+                word
+            ))
+        } else if word == "@rate_limit" || word == "rate_limit" {
+            Some(
+                "Endpoint rate limit attribute.\n\nSyntax: `@rate_limit(max_requests, window_secs)` before an endpoint."
                     .to_string(),
             )
         } else if word == "GET" || word == "POST" {

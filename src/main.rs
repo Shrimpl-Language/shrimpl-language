@@ -2,13 +2,17 @@ use clap::{Parser, Subcommand};
 use std::process::{Command, Stdio};
 use std::{env, error::Error, fs};
 
+mod analysis;
 mod ast;
 mod config;
 mod docs;
 mod interpreter;
+mod loader;
 mod lockfile;
 mod orm;
 mod parser;
+mod tests;
+mod typecheck;
 
 use config as shrimpl_config;
 use interpreter::http::run as run_server;
@@ -56,6 +60,9 @@ fn print_welcome_screen() {
     println!("      Run lints and print human-readable diagnostics.");
     println!("      Exits with status 1 if there are errors.");
     println!();
+    println!("  shrimpl --file app.shr test");
+    println!("      Run embedded Shrimpl test blocks.");
+    println!();
     println!("  shrimpl --file app.shr format");
     println!("      Format Shrimpl source in-place (whitespace cleanup).");
     println!();
@@ -102,6 +109,9 @@ enum Commands {
     /// Human-readable lints (errors/warnings) with CI-friendly exit code
     Lint,
 
+    /// Run embedded Shrimpl test blocks
+    Test,
+
     /// Format Shrimpl source in-place
     Format,
 
@@ -144,7 +154,9 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
 
         Commands::Run => {
             let (source, mut program) = load_and_parse(&cli.file)?;
-            let _ = source;
+            let diagnostics = analysis::analyze_program(&program, &source);
+            print_diagnostics(&diagnostics);
+            exit_on_analysis_errors(&diagnostics);
 
             // Apply server overrides from config file (port / tls).
             shrimpl_config::apply_server_to_program(&mut program);
@@ -175,7 +187,10 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
         }
 
         Commands::Check => {
-            let (_source, _program) = load_and_parse(&cli.file)?;
+            let (source, program) = load_and_parse(&cli.file)?;
+            let diagnostics = analysis::analyze_program(&program, &source);
+            print_diagnostics(&diagnostics);
+            exit_on_analysis_errors(&diagnostics);
             println!("OK: {}", &cli.file);
         }
 
@@ -186,53 +201,60 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
         }
 
         Commands::Diagnostics => {
-            let (_source, program) = load_and_parse(&cli.file)?;
-            let diags = docs::build_diagnostics(&program);
+            let (source, program) = load_and_parse(&cli.file)?;
+            let diags = docs::build_diagnostics_with_source(&program, &source);
             println!("{}", serde_json::to_string_pretty(&diags)?);
         }
 
         Commands::Lint => {
-            let (_source, program) = load_and_parse(&cli.file)?;
-            let diags_json: serde_json::Value = docs::build_diagnostics(&program);
+            let (source, program) = load_and_parse(&cli.file)?;
+            let diagnostics = analysis::analyze_program(&program, &source);
 
-            let errors = diags_json
-                .get("errors")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let warnings = diags_json
-                .get("warnings")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-
-            if errors.is_empty() && warnings.is_empty() {
+            if diagnostics.is_empty() {
                 println!("No lints: {}", &cli.file);
             } else {
-                for item in &errors {
-                    let msg = item
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Shrimpl error");
-                    println!("error: {msg}");
-                }
-                for item in &warnings {
-                    let msg = item
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Shrimpl warning");
-                    println!("warning: {msg}");
+                print_diagnostics(&diagnostics);
+            }
+
+            exit_on_analysis_errors(&diagnostics);
+        }
+
+        Commands::Test => {
+            let (source, program) = load_and_parse(&cli.file)?;
+            let diagnostics = analysis::analyze_program(&program, &source);
+            print_diagnostics(&diagnostics);
+            exit_on_analysis_errors(&diagnostics);
+
+            let results = tests::run_program_tests(&program);
+            if results.is_empty() {
+                println!("No tests: {}", &cli.file);
+                return Ok(());
+            }
+
+            let mut failed = 0usize;
+            for result in &results {
+                if result.passed {
+                    println!("ok: {}", result.name);
+                } else {
+                    failed += 1;
+                    println!("fail: {}", result.name);
+                    for failure in &result.failures {
+                        println!("  - {failure}");
+                    }
                 }
             }
 
-            if !errors.is_empty() {
-                // Non-zero exit so CI can fail on errors.
+            if failed > 0 {
+                eprintln!("{} test(s) failed", failed);
                 std::process::exit(1);
             }
+
+            println!("All {} test(s) passed", results.len());
         }
 
         Commands::Format => {
-            let (source, _program) = load_and_parse(&cli.file)?;
+            let source = fs::read_to_string(&cli.file)
+                .map_err(|e| format!("Failed to read {}: {}", &cli.file, e))?;
             let formatted = format_source(&source);
 
             if formatted == source {
@@ -250,7 +272,8 @@ fn run_cli() -> Result<(), Box<dyn Error>> {
 /// Read the Shrimpl source file and parse it into a Program.
 /// Also writes shrimpl.lock using the current Shrimpl version and environment.
 fn load_and_parse(path: &str) -> Result<(String, ast::Program), Box<dyn Error>> {
-    let source = fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path, e))?;
+    let source = loader::load_with_imports(path)
+        .map_err(|e| format!("Failed to load {} and its imports: {}", path, e))?;
 
     let program = parse_program(&source).map_err(|e| format!("Parse error in {}: {}", path, e))?;
 
@@ -258,6 +281,32 @@ fn load_and_parse(path: &str) -> Result<(String, ast::Program), Box<dyn Error>> 
     write_lockfile(SHRIMPL_VERSION, &env_name, path, &source);
 
     Ok((source, program))
+}
+
+fn print_diagnostics(diagnostics: &[analysis::AnalysisDiagnostic]) {
+    for diagnostic in diagnostics {
+        let location = diagnostic
+            .span
+            .map(|span| format!("{}:{}", span.line + 1, span.character + 1))
+            .unwrap_or_else(|| "-".to_string());
+        println!(
+            "{}[{}] {} {}: {}",
+            diagnostic.severity.as_str(),
+            diagnostic.code,
+            location,
+            diagnostic.name,
+            diagnostic.message
+        );
+    }
+}
+
+fn exit_on_analysis_errors(diagnostics: &[analysis::AnalysisDiagnostic]) {
+    if diagnostics
+        .iter()
+        .any(|diag| diag.severity == analysis::DiagnosticSeverity::Error)
+    {
+        std::process::exit(1);
+    }
 }
 
 /// Simple, safe formatter:

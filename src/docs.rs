@@ -2,9 +2,9 @@
 //
 // Shrimpl API Studio: schema, diagnostics, and HTML UI.
 
-use crate::ast::{Body, Expr, Method, Program};
+use crate::analysis;
+use crate::ast::{Body, Method, Program};
 use serde_json::{json, Value};
-use std::collections::HashSet;
 
 pub fn build_schema(program: &Program) -> Value {
     let endpoints: Vec<Value> = program
@@ -33,187 +33,16 @@ pub fn build_schema(program: &Program) -> Value {
     })
 }
 
-/// Build simple static diagnostics from AST:
-/// - unused path params in endpoints
-/// - unused parameters in functions
-/// - unused parameters in methods
-/// - duplicate (method, path) endpoint definitions
+/// Build static diagnostics from AST without source ranges.
+///
+/// Prefer `build_diagnostics_with_source` whenever source text is available;
+/// it returns the same JSON shape plus precise editor/API Studio ranges.
 pub fn build_diagnostics(program: &Program) -> Value {
-    let mut warnings = Vec::<Value>::new();
-    let errors: Vec<Value> = Vec::new();
-
-    // 1) Duplicate endpoints (same method + path)
-    let mut seen = std::collections::HashSet::<(String, String)>::new();
-    for ep in &program.endpoints {
-        let m = match ep.method {
-            Method::Get => "GET".to_string(),
-            Method::Post => "POST".to_string(),
-        };
-        let key = (m.clone(), ep.path.clone());
-        if !seen.insert(key.clone()) {
-            warnings.push(json!({
-                "kind": "warning",
-                "scope": "endpoint",
-                "name": ep.path,
-                "message": format!("Duplicate endpoint for {} {}", m, ep.path),
-            }));
-        }
-    }
-
-    // 2) Endpoint: path params that are never used in body
-    for ep in &program.endpoints {
-        let path_params: Vec<String> = ep
-            .path
-            .split('/')
-            .filter(|p| p.starts_with(':') && p.len() > 1)
-            .map(|p| p[1..].to_string())
-            .collect();
-
-        if path_params.is_empty() {
-            continue;
-        }
-
-        let mut used_vars = HashSet::<String>::new();
-        if let Body::TextExpr(ref expr) = ep.body {
-            collect_vars_expr(expr, &mut used_vars);
-        }
-
-        for param in path_params {
-            if !used_vars.contains(&param) {
-                warnings.push(json!({
-                    "kind": "warning",
-                    "scope": "endpoint",
-                    "name": ep.path,
-                    "message": format!("Path parameter :{} is never used in this endpoint body", param),
-                }));
-            }
-        }
-    }
-
-    // 3) Functions: unused parameters
-    for func in program.functions.values() {
-        let mut used = HashSet::<String>::new();
-        collect_vars_expr(&func.body, &mut used);
-
-        for param in &func.params {
-            if !used.contains(param) {
-                warnings.push(json!({
-                    "kind": "warning",
-                    "scope": "function",
-                    "name": func.name,
-                    "message": format!("Parameter '{}' is never used in function body", param),
-                }));
-            }
-        }
-    }
-
-    // 4) Methods: unused parameters
-    for class in program.classes.values() {
-        for method in class.methods.values() {
-            let mut used = HashSet::<String>::new();
-            collect_vars_expr(&method.body, &mut used);
-
-            for param in &method.params {
-                if !used.contains(param) {
-                    warnings.push(json!({
-                        "kind": "warning",
-                        "scope": "method",
-                        "name": format!("{}.{}", class.name, method.name),
-                        "message": format!("Parameter '{}' is never used in method body", param),
-                    }));
-                }
-            }
-        }
-    }
-
-    json!({
-        "errors": errors,
-        "warnings": warnings,
-    })
+    analysis::build_diagnostics_json(program, None)
 }
 
-// Walk expression tree and collect variable names.
-fn collect_vars_expr(expr: &Expr, out: &mut HashSet<String>) {
-    match expr {
-        // Variable reference: record the name
-        Expr::Var(name) => {
-            out.insert(name.clone());
-        }
-
-        // Literals: they don't contain variable references
-        Expr::Number(_) | Expr::Str(_) | Expr::Bool(_) => {}
-
-        // List literal – walk each element
-        Expr::List(items) => {
-            for e in items {
-                collect_vars_expr(e, out);
-            }
-        }
-
-        // Map literal – walk each value expression (keys are plain strings)
-        Expr::Map(entries) => {
-            for (_k, v) in entries {
-                collect_vars_expr(v, out);
-            }
-        }
-
-        // Binary operator: recurse into both sides
-        Expr::Binary { left, right, .. } => {
-            collect_vars_expr(left, out);
-            collect_vars_expr(right, out);
-        }
-
-        // Function call: recurse into all arguments
-        Expr::Call { args, .. } => {
-            for a in args {
-                collect_vars_expr(a, out);
-            }
-        }
-
-        // Class method call: recurse into all arguments
-        Expr::MethodCall { args, .. } => {
-            for a in args {
-                collect_vars_expr(a, out);
-            }
-        }
-
-        // Control-flow expressions: walk all branches and the else body
-        Expr::If {
-            branches,
-            else_branch,
-        } => {
-            for (cond, body) in branches {
-                collect_vars_expr(cond, out);
-                collect_vars_expr(body, out);
-            }
-            if let Some(else_expr) = else_branch {
-                collect_vars_expr(else_expr, out);
-            }
-        }
-
-        // Repeat: walk repeat count and body expression
-        Expr::Repeat { count, body } => {
-            collect_vars_expr(count, out);
-            collect_vars_expr(body, out);
-        }
-
-        // Try expression: walk try, catch, and finally bodies so diagnostics
-        // remain complete when new control-flow is introduced.
-        Expr::Try {
-            try_body,
-            catch_var: _,
-            catch_body,
-            finally_body,
-        } => {
-            collect_vars_expr(try_body, out);
-            if let Some(catch_expr) = catch_body {
-                collect_vars_expr(catch_expr, out);
-            }
-            if let Some(finally_expr) = finally_body {
-                collect_vars_expr(finally_expr, out);
-            }
-        }
-    }
+pub fn build_diagnostics_with_source(program: &Program, source: &str) -> Value {
+    analysis::build_diagnostics_json(program, Some(source))
 }
 
 pub fn docs_html() -> &'static str {

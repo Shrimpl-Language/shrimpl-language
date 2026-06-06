@@ -109,6 +109,7 @@ fn eval_assertion(
 ///
 /// This is useful for CLI commands like `shrimpl test` that want a
 /// single success/failure status.
+#[allow(dead_code)]
 pub fn assert_program_tests_pass(program: &Program) -> Result<(), String> {
     let results = run_program_tests(program);
 
