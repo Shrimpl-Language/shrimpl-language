@@ -23,13 +23,51 @@ pub fn build_schema(program: &Program) -> Value {
                 "method": method_str,
                 "path": ep.path,
                 "bodyKind": body_kind,
+                "rateLimit": ep.rate_limit.as_ref().map(|rate_limit| {
+                    json!({
+                        "maxRequests": rate_limit.max_requests,
+                        "windowSeconds": rate_limit.window_secs,
+                    })
+                }),
             })
         })
         .collect();
 
+    let mut models: Vec<Value> = program
+        .models
+        .values()
+        .map(|model| {
+            json!({
+                "name": model.name,
+                "tableName": model.table_name,
+                "fields": model.fields.iter().map(|field| {
+                    json!({
+                        "name": field.name,
+                        "type": field.ty,
+                        "primaryKey": field.is_primary_key,
+                        "optional": field.is_optional,
+                    })
+                }).collect::<Vec<Value>>(),
+            })
+        })
+        .collect();
+    models.sort_by(|a, b| {
+        a.get("name")
+            .and_then(Value::as_str)
+            .cmp(&b.get("name").and_then(Value::as_str))
+    });
+
     json!({
-        "server": { "port": program.server.port },
-        "endpoints": endpoints
+        "language": {
+            "name": "Shrimpl",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "server": {
+            "port": program.server.port,
+            "tls": program.server.tls,
+        },
+        "endpoints": endpoints,
+        "models": models,
     })
 }
 

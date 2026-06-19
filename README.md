@@ -1,4 +1,4 @@
-# Shrimpl 0.5 Programming Language
+# Shrimpl 1.0 Programming Language
 
 [![Shrimpl banner](assets/shrimpl_banner.png)](https://shrimpl.dev)
 
@@ -30,14 +30,16 @@ Shrimpl is a beginner‑friendly programming language designed to bridge the gap
 
 Shrimpl programs are interpreted by a Rust‑based runtime that can run on most platforms. A companion Language Server (LSP), VS Code extension, and browser‑based API Studio make it easy to experiment, debug, and explore programs interactively.
 
-Shrimpl 0.5.x adds several important features:
+Shrimpl 1.0 stabilizes the core language and tooling around a small, readable syntax:
 
 * Optional **AI helpers** to call OpenAI models (`openai_chat`, `openai_chat_json`, `openai_mcp_call`).
-* New **control‑flow expressions**: booleans, comparisons, logical operators, `if / elif / else` expressions, and `repeat N times` loops.
+* **Control‑flow expressions**: booleans, comparisons, logical operators, `if / elif / else` expressions, and `repeat N times` loops.
+* First-class **list and map literals** that stay structured at runtime and can still be returned as JSON text.
+* Practical **JSON/data helpers** (`json_parse`, `json_get`, `json_set`, `range`, `join`, `split`, `contains`, `keys`, `values`).
 * A simple **configuration system** (`config/config.<env>.json`) for server options, JWT auth, request validation, and optional static type annotations.
 * Built‑in **JWT‑aware HTTP server** with protected paths and request‑scoped variables such as `jwt_sub`.
 * Per‑endpoint **JSON Schema validation** and automatic input sanitization.
-* An optional **static type checker** driven by config‑based annotations.
+* Shared CLI/LSP/API Studio **static analysis** for duplicate endpoints, invalid calls, declaration mistakes, rate-limit mistakes, unused params, duplicate map keys, and optional type annotations.
 * A small **lockfile** (`shrimpl.lock`) capturing version and hash information.
 * A **SQLite‑backed ORM** that turns `model` declarations into real tables in `shrimpl.db`, plus Shrimpl built‑ins for inserts and lookups.
 * A more robust **editor experience**: a bundled `shrimpl-lsp` in the official VS Code extension, with auto‑selected binaries per platform and a simple `shrimpl.lsp.path` override.
@@ -69,6 +71,8 @@ Shrimpl supports:
 * Variables and expressions
 * Functions and classes (with static methods)
 * Control flow expressions (`if / elif / else`, `repeat`)
+* First-class list and map literals (`[1, 2]`, `{ name: "Shrimpl" }`)
+* Structured JSON helpers for API and data workflows
 * Built‑in helpers for text, numbers, vectors/tensors, dataframes, and linear regression
 * HTTP client utilities for calling external APIs
 * Optional AI helpers for calling OpenAI models (chat‑style responses and JSON payloads)
@@ -83,6 +87,8 @@ Shrimpl supports:
   * unused path parameters
   * unused function/method parameters
   * duplicate endpoints with the same method and path
+  * duplicate parameters, duplicate secrets, duplicate model fields, and duplicate map keys
+  * invalid rate-limit values and fragile server declarations
 * JSON Schema validation rejects malformed requests before Shrimpl code runs.
 * A simple type checker can detect type mismatches between annotated functions and their bodies.
 * The ORM is initialized once at server startup, and failures are treated as runtime errors you can log and inspect rather than silent data corruption.
@@ -449,15 +455,17 @@ This allows endpoints to read identity information without worrying about missin
 
 ## Expressions and Data Types
 
-Shrimpl expressions are intentionally small and consistent. This version introduces booleans, comparisons, logical operators, and expression‑level control flow.
+Shrimpl expressions are intentionally small and consistent. Shrimpl 1.0 supports booleans, comparisons, logical operators, expression‑level control flow, and structured list/map values.
 
 ### Literal Values
 
 Supported literals:
 
 * Numbers: `42`, `3.14`, `-10`
-* Strings: `"Hello"`, `"abc123"`
+* Strings: `"Hello"`, `"abc123"`, `"line\nbreak"`
 * Booleans: `true`, `false`
+* Lists: `[1, 2, "three"]`
+* Maps: `{ name: "Shrimpl", version: 1 }`
 * Constant JSON: `json { "key": 123 }`
 
 ### Boolean Values and Truthiness
@@ -477,6 +485,8 @@ Truthiness rules used in `if`, `and`, `or`, and `repeat`:
 * `Bool`: `true` and `false` behave as expected.
 * `Number`: `0.0` is false; any other number is true.
 * `String`: `""` is false; any other string is true.
+* `List`: empty lists are false; non-empty lists are true.
+* `Map`: empty maps are false; non-empty maps are true.
 
 ### Variables
 
@@ -654,9 +664,10 @@ These helpers operate on basic values:
 | ------------------------------------- | --------------------------------------------------------- |
 | `number(x)`                           | Convert string or number `x` to a floating‑point number.  |
 | `string(x)`                           | Convert any value to a string.                            |
-| `len(x)`                              | Length of a string.                                       |
+| `len(x)`                              | Length of a string, list, or map.                         |
 | `upper(x)`                            | String to uppercase.                                      |
 | `lower(x)`                            | String to lowercase.                                      |
+| `type(x)`                             | Return `number`, `string`, `bool`, `list`, `map`, or `null`. |
 | `sum(a,b,...)`                        | Sum of numbers.                                           |
 | `avg(a,b,...)`                        | Average of numbers.                                       |
 | `min(a,b,...)`                        | Minimum of numbers.                                       |
@@ -667,14 +678,48 @@ These helpers operate on basic values:
 | `openai_chat_json(msg)`               | Call an OpenAI chat model; return full JSON as text.      |
 | `openai_mcp_call(server, tool, args)` | Experimental helper for MCP/tool‑calling style workflows. |
 
+### Structured Data Built-ins
+
+Shrimpl 1.0 keeps list and map values structured while they move through functions and built-ins. They are converted to compact JSON only when returned from an endpoint or explicitly converted with `string(...)` / `json_stringify(...)`.
+
+| Function                          | Description                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------- |
+| `json_parse(text)`                | Parse JSON text into a structured value.                                      |
+| `json_stringify(value)`           | Convert any value to compact JSON text.                                       |
+| `json_pretty(value)`              | Convert any value to formatted JSON text.                                     |
+| `json_get(value, path, default)`  | Read a nested value using `user.name`, `items.0`, or `items[0]` paths.        |
+| `json_set(value, path, new)`      | Return a copy of a value with the nested path updated.                        |
+| `contains(container, value)`      | Check substring membership, list membership, or map key membership.           |
+| `split(text, separator)`          | Split text into a list.                                                       |
+| `join(list, separator)`           | Join list values into text.                                                   |
+| `range(stop)`                     | Create `[0, 1, ... stop-1]`.                                                  |
+| `range(start, stop, step)`        | Create a bounded numeric list.                                                |
+| `list_get(list, index, default)`  | Read a list item, returning `default` or `""` when missing.                   |
+| `keys(map)`                       | Return a list of map keys.                                                    |
+| `values(map)`                     | Return a list of map values.                                                  |
+
+Example:
+
+```shrimpl
+func profile(name):
+  { name: name, roles: ["student", "builder"] }
+
+endpoint GET "/profile/:name":
+  json_pretty(json_set(profile(name), "active", true))
+
+endpoint GET "/roles/:name":
+  join(json_get(profile(name), "roles"), ", ")
+```
+
 ### HTTP Client
 
 Helpers for calling external APIs:
 
-| Function             | Description                                                               |
-| -------------------- | ------------------------------------------------------------------------- |
-| `http_get(url)`      | Send HTTP GET to `url`, return raw body as a string.                      |
-| `http_get_json(url)` | GET `url`, parse response as JSON, and return pretty‑printed JSON string. |
+| Function                    | Description                                                          |
+| --------------------------- | -------------------------------------------------------------------- |
+| `http_get(url)`             | Send HTTP GET to `url`, return raw body as a string.                 |
+| `http_get_json(url)`        | GET `url`, parse response as JSON, and return structured JSON/text.  |
+| `http_post_json(url, body)` | POST a Shrimpl value as JSON and return structured JSON/text.        |
 
 Example:
 
@@ -757,7 +802,7 @@ endpoint GET "/predict":
 
 ### ORM Built‑ins (SQLite Persistence)
 
-Shrimpl 0.5.5 introduces a minimal ORM layer backed by SQLite. It turns `model` declarations in Shrimpl code into real tables in a `shrimpl.db` file and exposes simple built‑ins for inserts and lookups.
+Shrimpl 1.0 includes a minimal ORM layer backed by SQLite. It turns `model` declarations in Shrimpl code into real tables in a `shrimpl.db` file and exposes simple built‑ins for inserts and lookups.
 
 At server startup (`shrimpl --file app.shr run`):
 
@@ -769,12 +814,12 @@ At server startup (`shrimpl --file app.shr run`):
 
 From Shrimpl code you do not call `init_global_orm` directly; instead you use the following built‑ins:
 
-| Function                                     | Description                                                                                        |
-| -------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `orm_insert(model_name, record_json_string)` | Insert a record into the table backing the given `model`. Returns the SQLite `rowid` as a string.  |
-| `orm_find_by_id(model_name, id_json_string)` | Look up a row by primary key. Returns a JSON string of the record, or `null` when no row is found. |
+| Function                            | Description                                                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `orm_insert(model_name, record)`    | Insert a JSON object or JSON string into the table backing the given `model`. Returns the row id. |
+| `orm_find_by_id(model_name, id)`    | Look up a row by primary key. Returns a JSON string of the record, or `null` when no row exists.  |
 
-Both functions expect **JSON strings**, not structured objects, because Shrimpl expressions are string‑based. Typical usage combines them with HTTP request variables.
+Both functions accept values that can be converted to JSON. That means existing JSON strings still work, while map literals such as `{ email: email, name: name }` are now the preferred 1.0 style.
 
 #### Declaring Models
 
@@ -1719,10 +1764,11 @@ This separation keeps language design and teaching concerns clear while allowing
 
 ## Conclusion
 
-Shrimpl 0.5.x combines the simplicity of a teaching language with practical features drawn from real‑world API development:
+Shrimpl 1.0 combines the simplicity of a teaching language with practical features drawn from real‑world API development:
 
 * Server‑side programming and HTTP endpoints
 * Control‑flow with expressions (`if`, `elif`, `else`, `repeat`)
+* Structured data with lists, maps, and JSON helpers
 * Data manipulation with vectors and dataframes
 * Basic machine learning with linear regression
 * Optional AI‑assisted endpoints with OpenAI helpers

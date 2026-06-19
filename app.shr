@@ -1,6 +1,6 @@
 # app.shr
 #
-# Shrimpl 0.5.5 demo:
+# Shrimpl 1.0 demo:
 # - Data, ML, config, HTTP, and OpenAI helpers
 # - Config-driven server (port/tls) via config/config.<env>.json
 # - Built-in JWT auth (via config.auth.*)
@@ -59,7 +59,7 @@ func chat_with_openai(prompt): openai_chat(prompt)
 func chat_with_openai_json(prompt): openai_chat_json(prompt)
 func call_openai_mcp(server_id, tool_name, args_json): openai_mcp_call(server_id, tool_name, args_json)
 
-# --- New generic config + env helpers ---------------------------------
+# --- Generic config + env helpers -------------------------------------
 
 # Store a config key/value in the in-memory app config.
 # Example:
@@ -98,7 +98,7 @@ func http_proxy_get(url): http_get(url)
 #   /http/get-json?url=https://api.github.com
 func http_proxy_get_json(url): http_get_json(url)
 
-# --- New control-flow / boolean / repeat helpers ----------------------
+# --- Control-flow / boolean / repeat helpers --------------------------
 
 # 1) Age classification using if / elif / else and numeric comparisons.
 #    Example:
@@ -131,6 +131,12 @@ func flag_to_bool(flag): if flag == "yes": true else: false
 #    Example:
 #      /repeat-greet?name=Ana&n=3 -> "Hello Ana! Hello Ana! Hello Ana!"
 func repeat_greet(name, n): repeat number(n) times: "Hello " + name + "! "
+
+# --- Structured data helpers ------------------------------------------
+
+func profile(name): { name: name, roles: ["student", "builder"], active: true }
+func profile_roles(name): join(json_get(profile(name), "roles"), ", ")
+func profile_with_score(name, score): json_set(profile(name), "score", number(score))
 
 # --- ORM helper functions ----------------------------------------------
 #
@@ -165,8 +171,16 @@ endpoint GET "/double/:n": Math.double(n)
 #   /welcome             -> "Hi there! No name provided."
 endpoint GET "/welcome": if name == "": "Hi there! No name provided." else: "Hi " + upper(name) + "! Name length: " + len(name)
 
-# Updated to reflect Shrimpl 0.5.5
-endpoint GET "/info": json { "lang": "Shrimpl", "version": "0.5.5", "ui": "/__shrimpl/ui" }
+# Updated to reflect Shrimpl 1.0
+endpoint GET "/info": json { "lang": "Shrimpl", "version": "1.0.0", "ui": "/__shrimpl/ui" }
+
+# Structured data demo:
+#   /profile?name=Aisen&score=100 -> {"active":true,"name":"Aisen","roles":["student","builder"],"score":100}
+endpoint GET "/profile": profile_with_score(name, score)
+
+# List/map helper demo:
+#   /profile-roles?name=Aisen -> "student, builder"
+endpoint GET "/profile-roles": profile_roles(name)
 
 # Numeric analysis from query (?a=10&b=5&c=15)
 endpoint GET "/stats": stats_summary(a, b, c)
@@ -437,3 +451,8 @@ test "repeat-greet-output":
 # Quick numeric sanity check for stats_summary().
 test "stats-summary-basic":
   assert stats_summary(1, 2, 3) == "sum=6, avg=2, min=1, max=3"
+
+# Validate first-class structured values and JSON path helpers.
+test "structured-data-basic":
+  assert json_get(profile_with_score("Aisen", 100), "score") == 100
+  assert profile_roles("Aisen") == "student, builder"

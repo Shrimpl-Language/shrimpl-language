@@ -47,9 +47,13 @@ struct JwtClaims {
 
 // --- Rate limiting state ---
 
+type RateLimitKey = (String, String);
+type RateLimitBuckets = HashMap<RateLimitKey, Vec<Instant>>;
+type SharedRateLimitBuckets = Arc<Mutex<RateLimitBuckets>>;
+
 #[derive(Debug, Clone)]
 struct RateLimiter {
-    inner: Arc<Mutex<HashMap<(String, String), Vec<Instant>>>>,
+    inner: SharedRateLimitBuckets,
 }
 
 impl Default for RateLimiter {
@@ -69,7 +73,7 @@ impl RateLimiter {
             Err(poisoned) => poisoned.into_inner(),
         };
 
-        let entry = guard.entry(key).or_insert_with(Vec::new);
+        let entry = guard.entry(key).or_default();
         let window = Duration::from_secs(u64::from(spec.window_secs));
 
         // Drop timestamps outside of window
@@ -364,12 +368,9 @@ pub async fn run(program: Program) -> std::io::Result<()> {
 
                                     // Always inject default JWT-related vars so app.shr
                                     // can safely reference jwt_sub/jwt_scope/jwt_role
-                                    vars.entry("jwt_sub".to_string())
-                                        .or_insert_with(String::new);
-                                    vars.entry("jwt_scope".to_string())
-                                        .or_insert_with(String::new);
-                                    vars.entry("jwt_role".to_string())
-                                        .or_insert_with(String::new);
+                                    vars.entry("jwt_sub".to_string()).or_default();
+                                    vars.entry("jwt_scope".to_string()).or_default();
+                                    vars.entry("jwt_role".to_string()).or_default();
 
                                     // Override with claims when present
                                     if let Some(claims) = claims_opt.as_ref() {
@@ -495,12 +496,9 @@ pub async fn run(program: Program) -> std::io::Result<()> {
                                     vars.insert("body".to_string(), body_text);
 
                                     // Always inject default JWT-related vars
-                                    vars.entry("jwt_sub".to_string())
-                                        .or_insert_with(String::new);
-                                    vars.entry("jwt_scope".to_string())
-                                        .or_insert_with(String::new);
-                                    vars.entry("jwt_role".to_string())
-                                        .or_insert_with(String::new);
+                                    vars.entry("jwt_sub".to_string()).or_default();
+                                    vars.entry("jwt_scope".to_string()).or_default();
+                                    vars.entry("jwt_role".to_string()).or_default();
 
                                     // Override with claims when present
                                     if let Some(claims) = claims_opt.as_ref() {

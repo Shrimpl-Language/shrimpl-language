@@ -13,7 +13,7 @@
 //
 // The checker:
 // - checks that annotated functions have the right number of params
-// - infers a simple type for the function body (number/string/bool/any)
+// - infers a simple type for the function body (number/string/bool/list/map/any)
 // - verifies body type is compatible with declared result type
 // - produces diagnostics in the same JSON shape used by docs::build_diagnostics
 
@@ -27,6 +27,8 @@ enum Ty {
     Number,
     String,
     Bool,
+    List,
+    Map,
     Any,
 }
 
@@ -35,6 +37,8 @@ fn parse_type_name(name: &str) -> Ty {
         "number" | "float" | "int" | "integer" => Ty::Number,
         "string" | "str" => Ty::String,
         "bool" | "boolean" => Ty::Bool,
+        "list" | "array" => Ty::List,
+        "map" | "object" => Ty::Map,
         _ => Ty::Any,
     }
 }
@@ -122,8 +126,48 @@ fn display_ty(t: Ty) -> &'static str {
         Ty::Number => "number",
         Ty::String => "string",
         Ty::Bool => "bool",
+        Ty::List => "list",
+        Ty::Map => "map",
         Ty::Any => "any",
     }
+}
+
+fn builtin_return_type(name: &str) -> Option<Ty> {
+    let ty = match name {
+        "number" | "len" | "sum" | "avg" | "min" | "max" | "tensor_dot" | "linreg_predict" => {
+            Ty::Number
+        }
+        "string"
+        | "type"
+        | "upper"
+        | "lower"
+        | "json_stringify"
+        | "json_pretty"
+        | "join"
+        | "config_set"
+        | "config_get"
+        | "env"
+        | "secret"
+        | "http_get"
+        | "http_get_json"
+        | "df_from_csv"
+        | "df_head"
+        | "df_select"
+        | "linreg_fit"
+        | "openai_set_api_key"
+        | "openai_set_system_prompt"
+        | "openai_chat"
+        | "openai_chat_json"
+        | "openai_mcp_call"
+        | "orm_insert"
+        | "orm_find_by_id" => Ty::String,
+        "contains" | "config_has" => Ty::Bool,
+        "split" | "range" | "keys" | "values" | "vec" | "tensor_add" => Ty::List,
+        "json_parse" | "json_get" | "json_set" | "list_get" | "http_post_json" => Ty::Any,
+        _ => return None,
+    };
+
+    Some(ty)
 }
 
 #[allow(clippy::only_used_in_recursion)]
@@ -141,11 +185,22 @@ fn infer_expr_type(
 
         Expr::Var(name) => env.get(name).copied().unwrap_or(Ty::Any),
 
-        Expr::List(_items) => Ty::Any,
-        Expr::Map(_pairs) => Ty::Any,
+        Expr::List(_items) => Ty::List,
+        Expr::Map(_pairs) => Ty::Map,
 
         Expr::Binary { left, op, right } => match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+            BinOp::Add => {
+                let lt = infer_expr_type(left, env, program, types_cfg, diags);
+                let rt = infer_expr_type(right, env, program, types_cfg, diags);
+                if lt == Ty::Number && rt == Ty::Number {
+                    Ty::Number
+                } else if lt == Ty::String || rt == Ty::String {
+                    Ty::String
+                } else {
+                    Ty::Any
+                }
+            }
+            BinOp::Sub | BinOp::Mul | BinOp::Div => {
                 let lt = infer_expr_type(left, env, program, types_cfg, diags);
                 let rt = infer_expr_type(right, env, program, types_cfg, diags);
                 if !is_assignable(lt, Ty::Number) || !is_assignable(rt, Ty::Number) {
@@ -205,6 +260,11 @@ fn infer_expr_type(
                     .as_ref()
                     .map(|r| parse_type_name(r))
                     .unwrap_or(Ty::Any)
+            } else if let Some(return_ty) = builtin_return_type(name) {
+                for arg in args {
+                    infer_expr_type(arg, env, program, types_cfg, diags);
+                }
+                return_ty
             } else {
                 // Unknown function: treat as dynamic.
                 Ty::Any

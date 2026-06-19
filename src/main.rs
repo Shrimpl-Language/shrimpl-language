@@ -82,6 +82,7 @@ fn print_welcome_screen() {
 /// Shrimpl CLI
 #[derive(Parser)]
 #[command(name = "shrimpl")]
+#[command(version)]
 #[command(about = "Shrimpl language CLI", long_about = None)]
 struct Cli {
     /// Path to the main Shrimpl file (default: app.shr)

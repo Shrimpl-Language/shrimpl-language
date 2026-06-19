@@ -11,6 +11,22 @@
 // lower(x)  -> string (lowercase)
 // number(x) -> number (string/number -> number)
 // string(x) -> string (anything -> string)
+// type(x)   -> string ("number", "string", "bool", "list", "map", "null")
+//
+// Structured data helpers
+// -----------------------
+// json_parse(text)               -> structured JSON value
+// json_stringify(value)          -> compact JSON text
+// json_pretty(value)             -> pretty JSON text
+// json_get(value, path, default) -> value at user.name / items[0].name path
+// json_set(value, path, new)     -> value with path updated
+// contains(container, value)     -> bool for strings, lists, and maps
+// split(text, separator)         -> list
+// join(list, separator)          -> string
+// range(stop)                    -> list [0, ..., stop)
+// range(start, stop, step)       -> list
+// list_get(list, index, default) -> item or default
+// keys(map) / values(map)        -> list
 //
 // Numeric helpers (analysis)
 // --------------------------
@@ -23,6 +39,7 @@
 // ------------------------------
 // http_get(url)      -> string (raw response body)
 // http_get_json(url) -> string (pretty JSON or error)
+// http_post_json(url, body) -> response JSON value or response text
 //
 // Vector / tensor helpers (PyTorch-ish)
 // -------------------------------------
@@ -68,8 +85,8 @@
 // orm_insert(model_name, record_json)   -> string primary key / rowid
 // orm_find_by_id(model_name, id_json)  -> string JSON object or ""
 //
-// All complex objects are passed as JSON strings in Shrimpl.
-// Kids only see numbers, strings, booleans, and function calls.
+// Complex values stay structured inside the evaluator and are rendered as
+// compact JSON only at the endpoint/string boundary.
 
 use crate::config;
 use crate::orm; // <--- hook into src/orm.rs
@@ -97,6 +114,7 @@ enum ValueRuntime {
     Number(f64),
     Str(String),
     Bool(bool),
+    Json(Value),
 }
 
 impl fmt::Display for ValueRuntime {
@@ -111,6 +129,7 @@ impl fmt::Display for ValueRuntime {
             }
             ValueRuntime::Str(s) => write!(f, "{}", s),
             ValueRuntime::Bool(b) => write!(f, "{}", b),
+            ValueRuntime::Json(v) => write!(f, "{}", v),
         }
     }
 }
@@ -245,11 +264,7 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> EvalResult<ValueRunti
             .get(name)
             .ok_or_else(|| format!("Unknown variable '{}'", name)),
 
-        Expr::Binary { left, op, right } => {
-            let lv = eval_expr(left, program, env)?;
-            let rv = eval_expr(right, program, env)?;
-            eval_binary(&lv, op, &rv)
-        }
+        Expr::Binary { left, op, right } => eval_binary_expr(left, op, right, program, env),
 
         Expr::Call { name, args } => {
             if let Some(func) = program.functions.get(name) {
@@ -285,9 +300,7 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> EvalResult<ValueRunti
                 let v = eval_expr(item, program, env)?;
                 arr.push(value_to_json(&v));
             }
-            let txt =
-                serde_json::to_string(&Value::Array(arr)).unwrap_or_else(|_| "[]".to_string());
-            Ok(ValueRuntime::Str(txt))
+            Ok(ValueRuntime::Json(Value::Array(arr)))
         }
 
         Expr::Map(pairs) => {
@@ -296,9 +309,7 @@ fn eval_expr(expr: &Expr, program: &Program, env: &Env) -> EvalResult<ValueRunti
                 let v = eval_expr(vexpr, program, env)?;
                 obj.insert(k.clone(), value_to_json(&v));
             }
-            let txt =
-                serde_json::to_string(&Value::Object(obj)).unwrap_or_else(|_| "{}".to_string());
-            Ok(ValueRuntime::Str(txt))
+            Ok(ValueRuntime::Json(Value::Object(obj)))
         }
 
         Expr::If {
@@ -437,9 +448,12 @@ fn eval_builtin(
             if vals.len() != 1 {
                 return Err("len(x) expects exactly 1 argument".to_string());
             }
-            Ok(ValueRuntime::Number(
-                vals[0].to_string().chars().count() as f64
-            ))
+            let count = match &vals[0] {
+                ValueRuntime::Json(Value::Array(items)) => items.len(),
+                ValueRuntime::Json(Value::Object(map)) => map.len(),
+                _ => vals[0].to_string().chars().count(),
+            };
+            Ok(ValueRuntime::Number(count as f64))
         }
 
         "upper" => {
@@ -469,6 +483,161 @@ fn eval_builtin(
                 return Err("string(x) expects exactly 1 argument".to_string());
             }
             Ok(ValueRuntime::Str(vals[0].to_string()))
+        }
+
+        "type" => {
+            if vals.len() != 1 {
+                return Err("type(x) expects exactly 1 argument".to_string());
+            }
+            Ok(ValueRuntime::Str(runtime_type_name(&vals[0]).to_string()))
+        }
+
+        "json_parse" => {
+            if vals.len() != 1 {
+                return Err("json_parse(text) expects exactly 1 argument".to_string());
+            }
+            let text = vals[0].to_string();
+            let parsed: Value = serde_json::from_str(&text)
+                .map_err(|e| format!("json_parse: input is not valid JSON: {}", e))?;
+            Ok(json_to_runtime_value(&parsed))
+        }
+
+        "json_stringify" => {
+            if vals.len() != 1 {
+                return Err("json_stringify(value) expects exactly 1 argument".to_string());
+            }
+            let text = serde_json::to_string(&value_to_json(&vals[0]))
+                .map_err(|e| format!("json_stringify: failed to encode value: {}", e))?;
+            Ok(ValueRuntime::Str(text))
+        }
+
+        "json_pretty" => {
+            if vals.len() != 1 {
+                return Err("json_pretty(value) expects exactly 1 argument".to_string());
+            }
+            let text = serde_json::to_string_pretty(&value_to_json(&vals[0]))
+                .map_err(|e| format!("json_pretty: failed to encode value: {}", e))?;
+            Ok(ValueRuntime::Str(text))
+        }
+
+        "json_get" => {
+            if vals.len() < 2 || vals.len() > 3 {
+                return Err("json_get(value, path, [default]) expects 2 or 3 arguments".to_string());
+            }
+
+            let root = value_to_json(&vals[0]);
+            let path = vals[1].to_string();
+            match json_get_path(&root, &path)? {
+                Some(value) => Ok(json_to_runtime_value(value)),
+                None if vals.len() == 3 => Ok(vals[2].clone()),
+                None => Ok(ValueRuntime::Str(String::new())),
+            }
+        }
+
+        "json_set" => {
+            if vals.len() != 3 {
+                return Err("json_set(value, path, new_value) expects 3 arguments".to_string());
+            }
+
+            let mut root = value_to_json(&vals[0]);
+            let path = vals[1].to_string();
+            let new_value = value_to_json(&vals[2]);
+            json_set_path(&mut root, &path, new_value)?;
+            Ok(json_to_runtime_value(&root))
+        }
+
+        "contains" => {
+            if vals.len() != 2 {
+                return Err("contains(container, value) expects 2 arguments".to_string());
+            }
+            Ok(ValueRuntime::Bool(runtime_contains(&vals[0], &vals[1])))
+        }
+
+        "join" => {
+            if vals.len() != 2 {
+                return Err("join(list, separator) expects 2 arguments".to_string());
+            }
+            let arr = runtime_array("join list", &vals[0])?;
+            let sep = vals[1].to_string();
+            let parts: Vec<String> = arr.iter().map(json_value_to_text).collect();
+            Ok(ValueRuntime::Str(parts.join(&sep)))
+        }
+
+        "split" => {
+            if vals.len() != 2 {
+                return Err("split(text, separator) expects 2 arguments".to_string());
+            }
+            let text = vals[0].to_string();
+            let sep = vals[1].to_string();
+            if sep.is_empty() {
+                return Err("split(text, separator): separator cannot be empty".to_string());
+            }
+            let parts: Vec<Value> = text.split(&sep).map(|part| json!(part)).collect();
+            Ok(ValueRuntime::Json(Value::Array(parts)))
+        }
+
+        "range" => {
+            if vals.is_empty() || vals.len() > 3 {
+                return Err(
+                    "range(stop) or range(start, stop, [step]) expects 1-3 arguments".to_string(),
+                );
+            }
+
+            let (start, stop, step) = match vals.len() {
+                1 => (0.0, as_number(&vals[0])?, 1.0),
+                2 => (as_number(&vals[0])?, as_number(&vals[1])?, 1.0),
+                3 => (
+                    as_number(&vals[0])?,
+                    as_number(&vals[1])?,
+                    as_number(&vals[2])?,
+                ),
+                _ => unreachable!(),
+            };
+
+            let values = build_range(start, stop, step)?;
+            Ok(ValueRuntime::Json(Value::Array(
+                values.into_iter().map(|n| json!(n)).collect(),
+            )))
+        }
+
+        "list_get" => {
+            if vals.len() < 2 || vals.len() > 3 {
+                return Err("list_get(list, index, [default]) expects 2 or 3 arguments".to_string());
+            }
+            let arr = runtime_array("list_get list", &vals[0])?;
+            let index = as_number(&vals[1])?;
+            if index < 0.0 {
+                if vals.len() == 3 {
+                    return Ok(vals[2].clone());
+                }
+                return Ok(ValueRuntime::Str(String::new()));
+            }
+            let index = index.floor() as usize;
+            match arr.get(index) {
+                Some(value) => Ok(json_to_runtime_value(value)),
+                None if vals.len() == 3 => Ok(vals[2].clone()),
+                None => Ok(ValueRuntime::Str(String::new())),
+            }
+        }
+
+        "keys" => {
+            if vals.len() != 1 {
+                return Err("keys(map) expects exactly 1 argument".to_string());
+            }
+            let obj = runtime_object("keys map", &vals[0])?;
+            Ok(ValueRuntime::Json(Value::Array(
+                obj.keys().map(|key| json!(key)).collect(),
+            )))
+        }
+
+        "values" => {
+            if vals.len() != 1 {
+                return Err("values(map) expects exactly 1 argument".to_string());
+            }
+            let obj = runtime_object("values map", &vals[0])?;
+            Ok(ValueRuntime::Json(Value::Array(
+                obj.values().cloned().collect(),
+            )))
         }
 
         // --- simple numeric analysis helpers ---
@@ -611,6 +780,7 @@ fn eval_builtin(
                 return Err("http_get(url) expects exactly 1 argument".to_string());
             }
             let url = vals[0].to_string();
+            validate_http_url(&url)?;
             let resp = ureq::get(&url).call();
             match resp {
                 Ok(r) => match r.into_string() {
@@ -626,6 +796,7 @@ fn eval_builtin(
                 return Err("http_get_json(url) expects exactly 1 argument".to_string());
             }
             let url = vals[0].to_string();
+            validate_http_url(&url)?;
             let resp = ureq::get(&url).call();
             match resp {
                 Ok(r) => {
@@ -640,6 +811,34 @@ fn eval_builtin(
                     ))
                 }
                 Err(err) => Err(format!("http_get_json({}): {}", url, err)),
+            }
+        }
+
+        "http_post_json" => {
+            if vals.len() != 2 {
+                return Err("http_post_json(url, body) expects 2 arguments".to_string());
+            }
+            let url = vals[0].to_string();
+            validate_http_url(&url)?;
+
+            let body = value_to_json(&vals[1]);
+            let body_text = serde_json::to_string(&body)
+                .map_err(|e| format!("http_post_json({}): failed to encode body: {}", url, e))?;
+
+            let resp = ureq::post(&url)
+                .set("Content-Type", "application/json")
+                .send_string(&body_text);
+
+            match resp {
+                Ok(r) => {
+                    let text = r.into_string().map_err(|e| {
+                        format!("http_post_json({}): failed to read body: {}", url, e)
+                    })?;
+                    let json_val: serde_json::Value =
+                        serde_json::from_str(&text).unwrap_or_else(|_| json!(text));
+                    Ok(json_to_runtime_value(&json_val))
+                }
+                Err(err) => Err(format!("http_post_json({}): {}", url, err)),
             }
         }
 
@@ -710,6 +909,7 @@ fn eval_builtin(
                 return Err("df_from_csv(url) expects exactly 1 argument".to_string());
             }
             let url = vals[0].to_string();
+            validate_http_url(&url)?;
             let resp = ureq::get(&url).call();
             let text = match resp {
                 Ok(r) => r
@@ -1087,6 +1287,7 @@ fn value_to_json(v: &ValueRuntime) -> Value {
     match v {
         ValueRuntime::Number(n) => json!(n),
         ValueRuntime::Bool(b) => json!(*b),
+        ValueRuntime::Json(value) => value.clone(),
         ValueRuntime::Str(s) => {
             // Try to parse as JSON; fall back to string.
             serde_json::from_str::<Value>(s).unwrap_or_else(|_| json!(s))
@@ -1102,7 +1303,7 @@ fn json_to_runtime_value(v: &Value) -> ValueRuntime {
     } else if let Some(s) = v.as_str() {
         ValueRuntime::Str(s.to_string())
     } else {
-        ValueRuntime::Str(v.to_string())
+        ValueRuntime::Json(v.clone())
     }
 }
 
@@ -1113,6 +1314,9 @@ fn as_number(v: &ValueRuntime) -> EvalResult<f64> {
             .parse::<f64>()
             .map_err(|_| format!("Value '{}' is not a number", s)),
         ValueRuntime::Bool(b) => Err(format!("Value '{}' is not a number", b)),
+        ValueRuntime::Json(value) => value
+            .as_f64()
+            .ok_or_else(|| format!("Value '{}' is not a number", value)),
     }
 }
 
@@ -1121,6 +1325,45 @@ fn as_bool(v: &ValueRuntime) -> EvalResult<bool> {
         ValueRuntime::Bool(b) => Ok(*b),
         ValueRuntime::Number(n) => Ok(*n != 0.0),
         ValueRuntime::Str(s) => Ok(!s.is_empty()),
+        ValueRuntime::Json(value) => Ok(match value {
+            Value::Null => false,
+            Value::Bool(b) => *b,
+            Value::Number(n) => n.as_f64().unwrap_or(0.0) != 0.0,
+            Value::String(s) => !s.is_empty(),
+            Value::Array(items) => !items.is_empty(),
+            Value::Object(map) => !map.is_empty(),
+        }),
+    }
+}
+
+fn eval_binary_expr(
+    left: &Expr,
+    op: &BinOp,
+    right: &Expr,
+    program: &Program,
+    env: &Env,
+) -> EvalResult<ValueRuntime> {
+    let lv = eval_expr(left, program, env)?;
+
+    match op {
+        BinOp::And => {
+            if !as_bool(&lv)? {
+                return Ok(ValueRuntime::Bool(false));
+            }
+            let rv = eval_expr(right, program, env)?;
+            Ok(ValueRuntime::Bool(as_bool(&rv)?))
+        }
+        BinOp::Or => {
+            if as_bool(&lv)? {
+                return Ok(ValueRuntime::Bool(true));
+            }
+            let rv = eval_expr(right, program, env)?;
+            Ok(ValueRuntime::Bool(as_bool(&rv)?))
+        }
+        _ => {
+            let rv = eval_expr(right, program, env)?;
+            eval_binary(&lv, op, &rv)
+        }
     }
 }
 
@@ -1150,23 +1393,13 @@ fn eval_binary(left: &ValueRuntime, op: &BinOp, right: &ValueRuntime) -> EvalRes
             Ok(ValueRuntime::Number(res))
         }
 
-        BinOp::Eq => {
-            let result = match (left, right) {
-                (ValueRuntime::Number(a), ValueRuntime::Number(b)) => a == b,
-                (ValueRuntime::Bool(a), ValueRuntime::Bool(b)) => a == b,
-                _ => left.to_string() == right.to_string(),
-            };
-            Ok(ValueRuntime::Bool(result))
-        }
+        BinOp::Eq => Ok(ValueRuntime::Bool(
+            value_to_json(left) == value_to_json(right),
+        )),
 
-        BinOp::Ne => {
-            let result = match (left, right) {
-                (ValueRuntime::Number(a), ValueRuntime::Number(b)) => a != b,
-                (ValueRuntime::Bool(a), ValueRuntime::Bool(b)) => a != b,
-                _ => left.to_string() != right.to_string(),
-            };
-            Ok(ValueRuntime::Bool(result))
-        }
+        BinOp::Ne => Ok(ValueRuntime::Bool(
+            value_to_json(left) != value_to_json(right),
+        )),
 
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
             let a = as_number(left)?;
@@ -1192,6 +1425,251 @@ fn eval_binary(left: &ValueRuntime, op: &BinOp, right: &ValueRuntime) -> EvalRes
             let b = as_bool(right)?;
             Ok(ValueRuntime::Bool(a || b))
         }
+    }
+}
+
+fn runtime_type_name(value: &ValueRuntime) -> &'static str {
+    match value {
+        ValueRuntime::Number(_) => "number",
+        ValueRuntime::Str(_) => "string",
+        ValueRuntime::Bool(_) => "bool",
+        ValueRuntime::Json(Value::Null) => "null",
+        ValueRuntime::Json(Value::Array(_)) => "list",
+        ValueRuntime::Json(Value::Object(_)) => "map",
+        ValueRuntime::Json(Value::Bool(_)) => "bool",
+        ValueRuntime::Json(Value::Number(_)) => "number",
+        ValueRuntime::Json(Value::String(_)) => "string",
+    }
+}
+
+fn json_value_to_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n
+            .as_f64()
+            .map(|value| {
+                if value.fract() == 0.0 {
+                    (value as i64).to_string()
+                } else {
+                    value.to_string()
+                }
+            })
+            .unwrap_or_else(|| n.to_string()),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => String::new(),
+        Value::Array(_) | Value::Object(_) => value.to_string(),
+    }
+}
+
+fn runtime_array(label: &str, value: &ValueRuntime) -> EvalResult<Vec<Value>> {
+    match value_to_json(value) {
+        Value::Array(items) => Ok(items),
+        other => Err(format!("{}: expected a list, got {}", label, other)),
+    }
+}
+
+fn runtime_object(label: &str, value: &ValueRuntime) -> EvalResult<serde_json::Map<String, Value>> {
+    match value_to_json(value) {
+        Value::Object(map) => Ok(map),
+        other => Err(format!("{}: expected a map, got {}", label, other)),
+    }
+}
+
+fn runtime_contains(container: &ValueRuntime, needle: &ValueRuntime) -> bool {
+    match value_to_json(container) {
+        Value::String(s) => s.contains(&needle.to_string()),
+        Value::Array(items) => {
+            let needle_json = value_to_json(needle);
+            items.iter().any(|item| item == &needle_json)
+        }
+        Value::Object(map) => map.contains_key(&needle.to_string()),
+        other => other == value_to_json(needle),
+    }
+}
+
+fn build_range(start: f64, stop: f64, step: f64) -> EvalResult<Vec<f64>> {
+    if step == 0.0 {
+        return Err("range(...): step cannot be 0".to_string());
+    }
+
+    let mut out = Vec::new();
+    let mut current = start;
+    let forward = step > 0.0;
+
+    while (forward && current < stop) || (!forward && current > stop) {
+        out.push(current);
+        if out.len() > 10_000 {
+            return Err("range(...): too many values (max 10_000)".to_string());
+        }
+        current += step;
+    }
+
+    Ok(out)
+}
+
+#[derive(Debug, Clone)]
+enum JsonPathSegment {
+    Key(String),
+    Index(usize),
+}
+
+fn parse_json_path(path: &str) -> EvalResult<Vec<JsonPathSegment>> {
+    let mut text = path.trim();
+    if text == "$" || text.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Some(rest) = text.strip_prefix("$.") {
+        text = rest;
+    } else if let Some(rest) = text.strip_prefix('$') {
+        text = rest.trim_start_matches('.');
+    } else {
+        text = text.trim_start_matches('.');
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut segments = Vec::new();
+    let mut key = String::new();
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        match chars[i] {
+            '.' => {
+                push_json_path_key(&mut segments, &mut key);
+                i += 1;
+            }
+            '[' => {
+                push_json_path_key(&mut segments, &mut key);
+                i += 1;
+                let start = i;
+                while i < chars.len() && chars[i] != ']' {
+                    i += 1;
+                }
+                if i >= chars.len() {
+                    return Err(format!("Invalid JSON path '{}': missing ']'", path));
+                }
+                let index_text: String = chars[start..i].iter().collect();
+                let index = index_text.trim().parse::<usize>().map_err(|_| {
+                    format!(
+                        "Invalid JSON path '{}': '{}' is not a list index",
+                        path, index_text
+                    )
+                })?;
+                segments.push(JsonPathSegment::Index(index));
+                i += 1;
+            }
+            c => {
+                key.push(c);
+                i += 1;
+            }
+        }
+    }
+
+    push_json_path_key(&mut segments, &mut key);
+    Ok(segments)
+}
+
+fn push_json_path_key(segments: &mut Vec<JsonPathSegment>, key: &mut String) {
+    let trimmed = key.trim();
+    if !trimmed.is_empty() {
+        if let Ok(index) = trimmed.parse::<usize>() {
+            segments.push(JsonPathSegment::Index(index));
+        } else {
+            segments.push(JsonPathSegment::Key(trimmed.to_string()));
+        }
+    }
+    key.clear();
+}
+
+fn json_get_path<'a>(root: &'a Value, path: &str) -> EvalResult<Option<&'a Value>> {
+    let mut current = root;
+    for segment in parse_json_path(path)? {
+        match segment {
+            JsonPathSegment::Key(key) => {
+                let Some(next) = current.get(&key) else {
+                    return Ok(None);
+                };
+                current = next;
+            }
+            JsonPathSegment::Index(index) => {
+                let Some(next) = current.get(index) else {
+                    return Ok(None);
+                };
+                current = next;
+            }
+        }
+    }
+    Ok(Some(current))
+}
+
+fn json_set_path(root: &mut Value, path: &str, new_value: Value) -> EvalResult<()> {
+    let segments = parse_json_path(path)?;
+    if segments.is_empty() {
+        *root = new_value;
+        return Ok(());
+    }
+
+    let mut current = root;
+    let last_index = segments.len() - 1;
+
+    for (idx, segment) in segments.iter().enumerate() {
+        let is_last = idx == last_index;
+        match segment {
+            JsonPathSegment::Key(key) => {
+                if is_last {
+                    ensure_object(current, path)?.insert(key.clone(), new_value.clone());
+                    return Ok(());
+                }
+                let object = ensure_object(current, path)?;
+                current = object
+                    .entry(key.clone())
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            }
+            JsonPathSegment::Index(index) => {
+                let array = ensure_array(current, path)?;
+                if *index >= array.len() {
+                    return Err(format!(
+                        "json_set: index {} is out of bounds for path '{}'",
+                        index, path
+                    ));
+                }
+                if is_last {
+                    array[*index] = new_value.clone();
+                    return Ok(());
+                }
+                current = &mut array[*index];
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_object<'a>(
+    value: &'a mut Value,
+    path: &str,
+) -> EvalResult<&'a mut serde_json::Map<String, Value>> {
+    if !value.is_object() {
+        *value = Value::Object(serde_json::Map::new());
+    }
+    value
+        .as_object_mut()
+        .ok_or_else(|| format!("json_set: path '{}' expected a map", path))
+}
+
+fn ensure_array<'a>(value: &'a mut Value, path: &str) -> EvalResult<&'a mut Vec<Value>> {
+    value
+        .as_array_mut()
+        .ok_or_else(|| format!("json_set: path '{}' expected a list", path))
+}
+
+fn validate_http_url(url: &str) -> EvalResult<()> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(format!(
+            "HTTP URL '{}' must start with http:// or https://",
+            url
+        ))
     }
 }
 
@@ -1275,5 +1753,72 @@ endpoint GET "/": repeat_greet("Ana", 2)
         let vars = HashMap::new();
         let result = eval_body_expr(expr, &program, &vars).expect("expression should evaluate");
         assert_eq!(result, "Hello Ana! Hello Ana! ");
+    }
+
+    #[test]
+    fn json_helpers_preserve_structured_values() {
+        let source = r#"server 3000
+func profile(): { name: "Ana", scores: [10, 20] }
+endpoint GET "/": json_get(json_set(profile(), "scores[0]", 99), "scores.0")
+"#;
+        let program = parse_program(source).expect("program should parse");
+        let endpoint = program.endpoints.first().expect("endpoint should exist");
+
+        let Body::TextExpr(expr) = &endpoint.body else {
+            panic!("expected text expression body");
+        };
+
+        let vars = HashMap::new();
+        let result = eval_body_expr(expr, &program, &vars).expect("expression should evaluate");
+        assert_eq!(result, "99");
+    }
+
+    #[test]
+    fn list_helpers_keep_simple_data_workflows_compact() {
+        let source = r#"server 3000
+endpoint GET "/": join(range(1, 4), ",")
+"#;
+        let program = parse_program(source).expect("program should parse");
+        let endpoint = program.endpoints.first().expect("endpoint should exist");
+
+        let Body::TextExpr(expr) = &endpoint.body else {
+            panic!("expected text expression body");
+        };
+
+        let vars = HashMap::new();
+        let result = eval_body_expr(expr, &program, &vars).expect("expression should evaluate");
+        assert_eq!(result, "1,2,3");
+    }
+
+    #[test]
+    fn parser_handles_negative_numbers_and_escaped_strings() {
+        let source = "server 3000\nendpoint GET \"/\": \"line\\n\" + string(-2 + 5)\n";
+        let program = parse_program(source).expect("program should parse");
+        let endpoint = program.endpoints.first().expect("endpoint should exist");
+
+        let Body::TextExpr(expr) = &endpoint.body else {
+            panic!("expected text expression body");
+        };
+
+        let vars = HashMap::new();
+        let result = eval_body_expr(expr, &program, &vars).expect("expression should evaluate");
+        assert_eq!(result, "line\n3");
+    }
+
+    #[test]
+    fn boolean_logic_short_circuits_runtime_errors() {
+        let source = r#"server 3000
+endpoint GET "/": false and missing()
+"#;
+        let program = parse_program(source).expect("program should parse");
+        let endpoint = program.endpoints.first().expect("endpoint should exist");
+
+        let Body::TextExpr(expr) = &endpoint.body else {
+            panic!("expected text expression body");
+        };
+
+        let vars = HashMap::new();
+        let result = eval_body_expr(expr, &program, &vars).expect("expression should evaluate");
+        assert_eq!(result, "false");
     }
 }

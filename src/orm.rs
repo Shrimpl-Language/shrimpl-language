@@ -5,8 +5,8 @@
 // - Uses rusqlite with a single file database `shrimpl.db` in the CWD.
 // - At startup, `init_global_orm` walks all Program.models and issues
 //   CREATE TABLE IF NOT EXISTS statements.
-// - Exposes helpers that operate on JSON strings so the interpreter can
-//   wire them into builtins without depending on internal Value types.
+// - Exposes helpers that operate on JSON text so the interpreter can pass
+//   either structured map literals or existing JSON strings through builtins.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

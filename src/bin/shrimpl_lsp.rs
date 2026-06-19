@@ -384,6 +384,32 @@ fn find_word_span(line: &str, idx: usize) -> (usize, usize) {
     (start, end)
 }
 
+fn builtin_hover_markdown(word: &str) -> Option<&'static str> {
+    match word {
+        "json_parse" => Some("`json_parse(text)` parses JSON text into a structured Shrimpl value."),
+        "json_stringify" => {
+            Some("`json_stringify(value)` returns compact JSON text for any Shrimpl value.")
+        }
+        "json_pretty" => Some("`json_pretty(value)` returns formatted JSON text."),
+        "json_get" => Some(
+            "`json_get(value, path, default)` reads `user.name`, `items.0`, or `items[0]` style paths.",
+        ),
+        "json_set" => {
+            Some("`json_set(value, path, new_value)` returns a copy with the path updated.")
+        }
+        "contains" => Some("`contains(container, value)` checks strings, lists, and map keys."),
+        "join" => Some("`join(list, separator)` turns a list into text."),
+        "split" => Some("`split(text, separator)` turns text into a list."),
+        "range" => Some("`range(stop)` or `range(start, stop, step)` creates a bounded number list."),
+        "list_get" => Some("`list_get(list, index, default)` reads a list item safely."),
+        "keys" => Some("`keys(map)` returns the map keys as a list."),
+        "values" => Some("`values(map)` returns the map values as a list."),
+        "type" => Some("`type(value)` returns `number`, `string`, `bool`, `list`, `map`, or `null`."),
+        "http_post_json" => Some("`http_post_json(url, body)` sends a JSON POST request."),
+        _ => None,
+    }
+}
+
 /// Static completion items for Shrimpl keywords and basic patterns.
 fn keyword_completions() -> Vec<CompletionItem> {
     vec![
@@ -533,6 +559,86 @@ fn keyword_completions() -> Vec<CompletionItem> {
             insert_text_format: Some(InsertTextFormat::SNIPPET),
             ..CompletionItem::default()
         },
+        CompletionItem {
+            label: "http_post_json".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("POST a JSON value to a URL".to_string()),
+            insert_text: Some("http_post_json(${1:url}, ${2:body})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "json_get".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Read a value from a map/list using a simple path".to_string()),
+            insert_text: Some("json_get(${1:value}, \"${2:path}\", ${3:default})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "json_set".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Return a JSON value with a path updated".to_string()),
+            insert_text: Some("json_set(${1:value}, \"${2:path}\", ${3:new_value})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "json_parse".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Parse JSON text into a structured Shrimpl value".to_string()),
+            insert_text: Some("json_parse(${1:text})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "range".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Create a bounded numeric list".to_string()),
+            insert_text: Some("range(${1:start}, ${2:stop})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "join".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Join list values with a separator".to_string()),
+            insert_text: Some("join(${1:list}, \"${2:,}\")".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "split".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Split text into a list".to_string()),
+            insert_text: Some("split(${1:text}, \"${2:,}\")".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "contains".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Check string/list/map membership".to_string()),
+            insert_text: Some("contains(${1:container}, ${2:value})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "list_get".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Read a list item with an optional default".to_string()),
+            insert_text: Some("list_get(${1:list}, ${2:index}, ${3:default})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
+        CompletionItem {
+            label: "type".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("Return the runtime type name for a value".to_string()),
+            insert_text: Some("type(${1:value})".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..CompletionItem::default()
+        },
     ]
 }
 
@@ -667,7 +773,7 @@ impl LanguageServer for Backend {
             capabilities,
             server_info: Some(ServerInfo {
                 name: "Shrimpl Language Server".to_string(),
-                version: Some("0.5.5".to_string()),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
             }),
         })
     }
@@ -847,6 +953,8 @@ impl LanguageServer for Backend {
                 "Endpoint rate limit attribute.\n\nSyntax: `@rate_limit(max_requests, window_secs)` before an endpoint."
                     .to_string(),
             )
+        } else if let Some(markdown) = builtin_hover_markdown(&word) {
+            Some(markdown.to_string())
         } else if word == "GET" || word == "POST" {
             Some(format!(
                 "HTTP `{}` endpoint method.\n\nUsed in `endpoint` declarations, for example:\n```shrimpl\nendpoint {} \"/hello\": \"Hello!\"\n```",

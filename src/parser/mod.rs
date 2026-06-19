@@ -1,6 +1,6 @@
 // src/parser/mod.rs
 //
-// Shrimpl v0.5 parser (line-based).
+// Shrimpl v1.0 parser (line-based).
 // Features:
 // - server <port> [tls]
 // - endpoint METHOD "/path"[: <body>]
@@ -413,7 +413,24 @@ fn parse_endpoint(lines: &[&str], start: usize) -> Result<(EndpointDecl, usize),
 fn parse_body_spec(s: &str, line_no: usize) -> Result<Body, String> {
     let trimmed = s.trim();
 
+    if trimmed == "json" {
+        return Err(format!(
+            "Line {}: expected JSON expression after 'json'",
+            line_no
+        ));
+    }
+
     if let Some(rest) = trimmed.strip_prefix("json") {
+        if !rest
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_whitespace())
+        {
+            let expr = parse_expr(trimmed)
+                .map_err(|e| format!("Line {} (body expression): {}", line_no, e))?;
+            return Ok(Body::TextExpr(expr));
+        }
+
         let rest = rest.trim_start();
         if rest.is_empty() {
             return Err(format!(

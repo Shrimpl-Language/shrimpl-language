@@ -86,14 +86,36 @@ fn tokenize_expr(s: &str) -> Result<Vec<Token>, String> {
         match c {
             '"' => {
                 i += 1;
-                let start = i;
+                let mut text = String::new();
                 while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                        if i >= chars.len() {
+                            return Err("Unterminated string escape".to_string());
+                        }
+                        let escaped = match chars[i] {
+                            '"' => '"',
+                            '\\' => '\\',
+                            'n' => '\n',
+                            'r' => '\r',
+                            't' => '\t',
+                            other => {
+                                return Err(format!(
+                                    "Unsupported string escape '\\{}'; supported escapes are \\\", \\\\, \\n, \\r, and \\t",
+                                    other
+                                ))
+                            }
+                        };
+                        text.push(escaped);
+                        i += 1;
+                        continue;
+                    }
+                    text.push(chars[i]);
                     i += 1;
                 }
                 if i >= chars.len() {
                     return Err("Unterminated string literal".to_string());
                 }
-                let text: String = chars[start..i].iter().collect();
                 i += 1;
                 tokens.push(Token {
                     kind: TokKind::Str(text),
@@ -434,6 +456,17 @@ impl ExprParser {
         match self.bump() {
             Some(TokKind::Number(n)) => Ok(Expr::Number(n)),
             Some(TokKind::Str(s)) => Ok(Expr::Str(s)),
+            Some(TokKind::Minus) => {
+                let inner = self.parse_factor()?;
+                match inner {
+                    Expr::Number(n) => Ok(Expr::Number(-n)),
+                    other => Ok(Expr::Binary {
+                        left: Box::new(Expr::Number(0.0)),
+                        op: BinOp::Sub,
+                        right: Box::new(other),
+                    }),
+                }
+            }
             Some(TokKind::Ident(name)) => {
                 if name == "true" {
                     return Ok(Expr::Bool(true));

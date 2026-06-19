@@ -1,7 +1,7 @@
 {
-  "shrimpl_version": "0.5.5",
+  "shrimpl_version": "1.0.0",
   "environment": "dev",
   "entry_path": "app.shr",
-  "entry_hash": "0676ad4be4098bbf6ef0f450e8aa898130ba53ee2eec1f2f4f1e85a6de05e716",
-  "generated_at": 1765299724
+  "entry_hash": "5f71e2a6bae8743e55eee66de5b30ee11342cb4083e9c95ad52cf064924208d2",
+  "generated_at": 1781884692
 }

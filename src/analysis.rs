@@ -135,6 +135,7 @@ struct EndpointOccurrence {
 #[derive(Debug)]
 struct SourceIndex {
     lines: Vec<String>,
+    server: Option<SourceSpan>,
     functions: HashMap<String, SourceSpan>,
     classes: HashMap<String, SourceSpan>,
     methods: HashMap<(String, String), SourceSpan>,
@@ -147,6 +148,7 @@ impl SourceIndex {
         let lines: Vec<String> = source.lines().map(|line| line.to_string()).collect();
         let mut index = Self {
             lines,
+            server: None,
             functions: HashMap::new(),
             classes: HashMap::new(),
             methods: HashMap::new(),
@@ -171,6 +173,12 @@ impl SourceIndex {
 
             let indent = line.len() - trimmed.len();
             let line_no = i as u32;
+
+            if trimmed.starts_with("server") {
+                self.server = Some(self.line_span(line_no, indent, line.len()));
+                i += 1;
+                continue;
+            }
 
             if let Some(stripped) = trimmed.strip_prefix("endpoint") {
                 let rest = stripped.trim_start();
@@ -378,6 +386,7 @@ pub fn analyze_program(program: &Program, source: &str) -> Vec<AnalysisDiagnosti
     let index = SourceIndex::new(source);
     let mut diagnostics = Vec::new();
 
+    analyze_declarations(program, &index, &mut diagnostics);
     analyze_duplicate_endpoints(program, &index, &mut diagnostics);
     analyze_unused_path_params(program, &index, &mut diagnostics);
     analyze_unused_function_params(program, &index, &mut diagnostics);
@@ -419,6 +428,239 @@ pub fn build_diagnostics_json(program: &Program, source: Option<&str>) -> Value 
         "errors": errors,
         "warnings": warnings,
     })
+}
+
+fn analyze_declarations(
+    program: &Program,
+    index: &SourceIndex,
+    diagnostics: &mut Vec<AnalysisDiagnostic>,
+) {
+    if program.server.port == 0 {
+        diagnostics.push(AnalysisDiagnostic::warning(
+            "server-ephemeral-port",
+            "server",
+            "server",
+            "Server port 0 asks the OS to choose a random port; use an explicit port for production"
+                .to_string(),
+            index.server,
+        ));
+    }
+
+    if program.server.tls && program.server.port != 443 {
+        diagnostics.push(AnalysisDiagnostic::warning(
+            "server-tls-port",
+            "server",
+            "server",
+            format!(
+                "TLS is enabled on port {}; production TLS is usually served on 443 or behind a reverse proxy",
+                program.server.port
+            ),
+            index.server,
+        ));
+    }
+
+    analyze_rate_limits(program, index, diagnostics);
+    analyze_duplicate_secrets(program, index, diagnostics);
+    analyze_duplicate_params(program, index, diagnostics);
+    analyze_models(program, index, diagnostics);
+    analyze_duplicate_map_keys(program, index, diagnostics);
+}
+
+fn analyze_rate_limits(
+    program: &Program,
+    index: &SourceIndex,
+    diagnostics: &mut Vec<AnalysisDiagnostic>,
+) {
+    let mut occurrence_counts = HashMap::<(String, String), usize>::new();
+
+    for ep in &program.endpoints {
+        let method = method_to_str(&ep.method).to_string();
+        let key = (method.clone(), ep.path.clone());
+        let occurrence = occurrence_counts.entry(key).or_insert(0);
+        let occurrence_index = *occurrence;
+        *occurrence += 1;
+
+        let Some(rate_limit) = &ep.rate_limit else {
+            continue;
+        };
+
+        let span = index
+            .endpoint_occurrence(&method, &ep.path, occurrence_index)
+            .map(|occ| occ.span);
+
+        if rate_limit.max_requests == 0 {
+            diagnostics.push(AnalysisDiagnostic::error(
+                "rate-limit-zero-max",
+                "endpoint",
+                &ep.path,
+                "@rate_limit max_requests must be greater than 0".to_string(),
+                span,
+            ));
+        }
+
+        if rate_limit.window_secs == 0 {
+            diagnostics.push(AnalysisDiagnostic::error(
+                "rate-limit-zero-window",
+                "endpoint",
+                &ep.path,
+                "@rate_limit window_secs must be greater than 0".to_string(),
+                span,
+            ));
+        }
+    }
+}
+
+fn analyze_duplicate_secrets(
+    program: &Program,
+    index: &SourceIndex,
+    diagnostics: &mut Vec<AnalysisDiagnostic>,
+) {
+    let mut seen = HashSet::<String>::new();
+    for secret in &program.secrets {
+        if !seen.insert(secret.name.clone()) {
+            diagnostics.push(AnalysisDiagnostic::error(
+                "duplicate-secret",
+                "secret",
+                &secret.name,
+                format!("Secret '{}' is declared more than once", secret.name),
+                index.find_symbol(&secret.name),
+            ));
+        }
+    }
+}
+
+fn analyze_duplicate_params(
+    program: &Program,
+    index: &SourceIndex,
+    diagnostics: &mut Vec<AnalysisDiagnostic>,
+) {
+    for func in program.functions.values() {
+        let decl_span = index.function_span(&func.name);
+        for param in duplicate_names(&func.params) {
+            diagnostics.push(AnalysisDiagnostic::error(
+                "duplicate-function-param",
+                "function",
+                &func.name,
+                format!(
+                    "Function '{}' declares parameter '{}' more than once",
+                    func.name, param
+                ),
+                decl_span.and_then(|span| index.param_span_in_decl(span, &param)),
+            ));
+        }
+    }
+
+    for class in program.classes.values() {
+        for method in class.methods.values() {
+            let decl_span = index.method_span(&class.name, &method.name);
+            for param in duplicate_names(&method.params) {
+                diagnostics.push(AnalysisDiagnostic::error(
+                    "duplicate-method-param",
+                    "method",
+                    &format!("{}.{}", class.name, method.name),
+                    format!(
+                        "Method '{}.{}' declares parameter '{}' more than once",
+                        class.name, method.name, param
+                    ),
+                    decl_span.and_then(|span| index.param_span_in_decl(span, &param)),
+                ));
+            }
+        }
+    }
+}
+
+fn analyze_models(
+    program: &Program,
+    index: &SourceIndex,
+    diagnostics: &mut Vec<AnalysisDiagnostic>,
+) {
+    for model in program.models.values() {
+        let model_span = index.models.get(&model.name).copied();
+        let mut seen_fields = HashSet::<String>::new();
+        let mut primary_keys = Vec::new();
+
+        for field in &model.fields {
+            if !seen_fields.insert(field.name.clone()) {
+                diagnostics.push(AnalysisDiagnostic::error(
+                    "duplicate-model-field",
+                    "model",
+                    &model.name,
+                    format!(
+                        "Model '{}' declares field '{}' more than once",
+                        model.name, field.name
+                    ),
+                    model_span,
+                ));
+            }
+
+            if field.is_primary_key {
+                primary_keys.push(field.name.clone());
+            }
+
+            if !is_supported_model_type(&field.ty) {
+                diagnostics.push(AnalysisDiagnostic::warning(
+                    "unsupported-model-type",
+                    "model",
+                    &model.name,
+                    format!(
+                        "Field '{}.{}' uses type '{}'; supported model types are int, integer, number, float, double, real, string, text, bool, boolean, json, and any",
+                        model.name, field.name, field.ty
+                    ),
+                    model_span,
+                ));
+            }
+        }
+
+        if primary_keys.len() > 1 {
+            diagnostics.push(AnalysisDiagnostic::error(
+                "multiple-model-primary-keys",
+                "model",
+                &model.name,
+                format!(
+                    "Model '{}' declares multiple primary keys: {}",
+                    model.name,
+                    primary_keys.join(", ")
+                ),
+                model_span,
+            ));
+        }
+    }
+}
+
+fn analyze_duplicate_map_keys(
+    program: &Program,
+    index: &SourceIndex,
+    diagnostics: &mut Vec<AnalysisDiagnostic>,
+) {
+    for endpoint in &program.endpoints {
+        if let Body::TextExpr(expr) = &endpoint.body {
+            let method = method_to_str(&endpoint.method);
+            let owner_span = index
+                .endpoint_occurrence(method, &endpoint.path, 0)
+                .map(|occ| occ.span);
+            analyze_duplicate_map_keys_expr(expr, owner_span, diagnostics);
+        }
+    }
+
+    for func in program.functions.values() {
+        analyze_duplicate_map_keys_expr(&func.body, index.function_span(&func.name), diagnostics);
+    }
+
+    for class in program.classes.values() {
+        for method in class.methods.values() {
+            analyze_duplicate_map_keys_expr(
+                &method.body,
+                index.method_span(&class.name, &method.name),
+                diagnostics,
+            );
+        }
+    }
+
+    for test in &program.tests {
+        for assertion in &test.assertions {
+            analyze_duplicate_map_keys_expr(assertion, None, diagnostics);
+        }
+    }
 }
 
 fn analyze_duplicate_endpoints(
@@ -835,6 +1077,107 @@ fn collect_vars_expr(expr: &Expr, out: &mut HashSet<String>) {
     }
 }
 
+fn analyze_duplicate_map_keys_expr(
+    expr: &Expr,
+    owner_span: Option<SourceSpan>,
+    diagnostics: &mut Vec<AnalysisDiagnostic>,
+) {
+    match expr {
+        Expr::Map(entries) => {
+            let mut seen = HashSet::<String>::new();
+            for (key, value) in entries {
+                if !seen.insert(key.clone()) {
+                    diagnostics.push(AnalysisDiagnostic::warning(
+                        "duplicate-map-key",
+                        "expression",
+                        key,
+                        format!("Map key '{}' is declared more than once; later values overwrite earlier values", key),
+                        owner_span,
+                    ));
+                }
+                analyze_duplicate_map_keys_expr(value, owner_span, diagnostics);
+            }
+        }
+        Expr::List(items) => {
+            for item in items {
+                analyze_duplicate_map_keys_expr(item, owner_span, diagnostics);
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            analyze_duplicate_map_keys_expr(left, owner_span, diagnostics);
+            analyze_duplicate_map_keys_expr(right, owner_span, diagnostics);
+        }
+        Expr::Call { args, .. } | Expr::MethodCall { args, .. } => {
+            for arg in args {
+                analyze_duplicate_map_keys_expr(arg, owner_span, diagnostics);
+            }
+        }
+        Expr::If {
+            branches,
+            else_branch,
+        } => {
+            for (cond, body) in branches {
+                analyze_duplicate_map_keys_expr(cond, owner_span, diagnostics);
+                analyze_duplicate_map_keys_expr(body, owner_span, diagnostics);
+            }
+            if let Some(else_expr) = else_branch {
+                analyze_duplicate_map_keys_expr(else_expr, owner_span, diagnostics);
+            }
+        }
+        Expr::Repeat { count, body } => {
+            analyze_duplicate_map_keys_expr(count, owner_span, diagnostics);
+            analyze_duplicate_map_keys_expr(body, owner_span, diagnostics);
+        }
+        Expr::Try {
+            try_body,
+            catch_body,
+            finally_body,
+            ..
+        } => {
+            analyze_duplicate_map_keys_expr(try_body, owner_span, diagnostics);
+            if let Some(catch_expr) = catch_body {
+                analyze_duplicate_map_keys_expr(catch_expr, owner_span, diagnostics);
+            }
+            if let Some(finally_expr) = finally_body {
+                analyze_duplicate_map_keys_expr(finally_expr, owner_span, diagnostics);
+            }
+        }
+        Expr::Number(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) => {}
+    }
+}
+
+fn duplicate_names(names: &[String]) -> Vec<String> {
+    let mut seen = HashSet::<String>::new();
+    let mut duplicates = Vec::<String>::new();
+    let mut emitted = HashSet::<String>::new();
+
+    for name in names {
+        if !seen.insert(name.clone()) && emitted.insert(name.clone()) {
+            duplicates.push(name.clone());
+        }
+    }
+
+    duplicates
+}
+
+fn is_supported_model_type(ty: &str) -> bool {
+    matches!(
+        ty.to_ascii_lowercase().as_str(),
+        "int"
+            | "integer"
+            | "number"
+            | "float"
+            | "double"
+            | "real"
+            | "string"
+            | "text"
+            | "bool"
+            | "boolean"
+            | "json"
+            | "any"
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 struct BuiltinSignature {
     min: usize,
@@ -873,6 +1216,12 @@ fn builtin_signature(name: &str) -> Option<BuiltinSignature> {
         | "lower"
         | "number"
         | "string"
+        | "type"
+        | "json_parse"
+        | "json_stringify"
+        | "json_pretty"
+        | "keys"
+        | "values"
         | "config_has"
         | "env"
         | "http_get"
@@ -883,14 +1232,21 @@ fn builtin_signature(name: &str) -> Option<BuiltinSignature> {
         | "openai_chat"
         | "openai_chat_json" => BuiltinSignature::exact(1),
 
-        "tensor_add" | "tensor_dot" | "df_head" | "df_select" | "linreg_fit" | "linreg_predict"
-        | "orm_insert" | "orm_find_by_id" | "config_set" => BuiltinSignature::exact(2),
+        "contains" | "join" | "split" | "tensor_add" | "tensor_dot" | "df_head" | "df_select"
+        | "linreg_fit" | "linreg_predict" | "orm_insert" | "orm_find_by_id" | "config_set"
+        | "http_post_json" => BuiltinSignature::exact(2),
 
         "openai_mcp_call" => BuiltinSignature::exact(3),
 
         "sum" | "avg" | "min" | "max" | "vec" => BuiltinSignature::range(1, None),
 
         "config_get" | "secret" => BuiltinSignature::range(1, Some(2)),
+
+        "range" => BuiltinSignature::range(1, Some(3)),
+
+        "json_get" | "list_get" => BuiltinSignature::range(2, Some(3)),
+
+        "json_set" => BuiltinSignature::exact(3),
 
         _ => return None,
     };
@@ -990,5 +1346,51 @@ endpoint GET "/": greet("A", "B")
         assert!(diagnostics
             .iter()
             .any(|item| item.code == "call-arity" && item.name == "greet"));
+    }
+
+    #[test]
+    fn accepts_shrimpl_1_data_builtins() {
+        let source = r#"server 3000
+endpoint GET "/": json_get(json_set({ name: "Ana" }, "name", "Ben"), "name")
+"#;
+        let program = parse_program(source).expect("program should parse");
+        let diagnostics = analyze_program(&program, source);
+
+        assert!(
+            diagnostics
+                .iter()
+                .all(|item| item.code != "undefined-function"),
+            "new data built-ins should be recognized: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn flags_production_declaration_mistakes() {
+        let source = r#"server 0
+@rate_limit(0, 0)
+endpoint GET "/": "bad"
+secret API = "ONE"
+secret API = "TWO"
+func bad(x, x): x
+model User:
+  id: int pk
+  id: string
+"#;
+        let program = parse_program(source).expect("program should parse");
+        let diagnostics = analyze_program(&program, source);
+
+        for expected in [
+            "server-ephemeral-port",
+            "rate-limit-zero-max",
+            "rate-limit-zero-window",
+            "duplicate-secret",
+            "duplicate-function-param",
+            "duplicate-model-field",
+        ] {
+            assert!(
+                diagnostics.iter().any(|item| item.code == expected),
+                "missing diagnostic {expected}: {diagnostics:?}"
+            );
+        }
     }
 }
